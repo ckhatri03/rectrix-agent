@@ -59,6 +59,7 @@ const CONTROL_PLANE_MODES = ['auto', 'http', 'rest', 'wss'] as const satisfies R
 const CONTROL_PLANE_AUTH_MODES = ['auto', 'token', 'x509'] as const satisfies ReadonlyArray<ControlPlaneAuthMode>;
 
 export const CAPABILITIES: CapabilityKey[] = [
+  'agent.diagnostics.snapshot',
   'stack.install',
   'stack.remove',
   'broker.config.apply',

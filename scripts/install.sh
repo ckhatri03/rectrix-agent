@@ -82,6 +82,21 @@ set_env_value() {
   fi
 }
 
+apply_agent_env_override() {
+  local key="$1"
+  local value="${!key:-}"
+
+  if [[ -z "${value}" ]]; then
+    return 0
+  fi
+
+  if [[ "${key}" == "AGENT_ACTIVATION_CODE" ]]; then
+    value="$(printf '%s' "${value}" | tr '[:lower:]' '[:upper:]')"
+  fi
+
+  set_env_value "${ENV_FILE}" "${key}" "${value}"
+}
+
 if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
   useradd --system --home-dir "${INSTALL_ROOT}" --shell /usr/sbin/nologin "${SERVICE_USER}"
 fi
@@ -126,6 +141,25 @@ else
   chown root:"${SERVICE_USER}" "${ENV_FILE}" || true
   chmod 0660 "${ENV_FILE}" || true
 fi
+
+for key in \
+  LOG_LEVEL \
+  MANAGER_API_URL \
+  WSS_URL \
+  CONTROL_PLANE_MODE \
+  CONTROL_PLANE_AUTH_MODE \
+  AGENT_ACTIVATION_CODE \
+  AGENT_ID \
+  AGENT_BOOTSTRAP_TOKEN \
+  AGENT_RUNTIME_TOKEN \
+  POLL_INTERVAL_MS \
+  HEARTBEAT_INTERVAL_MS \
+  WSS_PING_INTERVAL_MS \
+  WSS_BACKOFF_INITIAL_MS \
+  WSS_BACKOFF_MAX_MS
+do
+  apply_agent_env_override "${key}"
+done
 
 cat > "${SUDOERS_FILE}" <<EOF
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl, /usr/bin/apt-get, /usr/bin/install, /usr/bin/rm, /usr/bin/journalctl

@@ -1,4 +1,6 @@
+import os from 'node:os';
 import { z } from 'zod';
+import { config } from './config';
 import {
   aptInstall,
   aptRemove,
@@ -17,6 +19,13 @@ const fileSchema = z.object({
 
 const unitsSchema = z.array(z.string().min(1)).default([]);
 const packagesSchema = z.array(z.enum(['mosquitto', 'telegraf'])).default([]);
+const diagnosticsSchema = z.object({
+  note: z.string().trim().min(1).max(500).optional(),
+  requestedBy: z.string().trim().min(1).max(200).optional(),
+  expectedTransportMode: z
+    .enum(['auto', 'http', 'rest', 'wss'])
+    .optional(),
+});
 
 const fileApplySchema = z.object({
   files: z.array(fileSchema).min(1),
@@ -63,6 +72,14 @@ const summarizeUnitStates = async (units: string[]) => {
 
 const withDefaultPackages = (packages: string[] | undefined, fallback: string[]) =>
   packages && packages.length > 0 ? packages : fallback;
+
+const safeUsername = () => {
+  try {
+    return os.userInfo().username;
+  } catch {
+    return 'unknown';
+  }
+};
 
 const applyFiles = async (
   payload: z.infer<typeof fileApplySchema>,
@@ -142,6 +159,32 @@ const removeFiles = async (
 
 export const runJob = async (job: AgentJob): Promise<JobResult> => {
   switch (job.type) {
+    case 'agent.diagnostics.snapshot': {
+      const payload = diagnosticsSchema.parse(job.payload ?? {});
+      return {
+        ok: true,
+        summary: `Captured agent diagnostics on ${config.hostname}`,
+        details: {
+          timestamp: new Date().toISOString(),
+          hostname: config.hostname,
+          platform: process.platform,
+          arch: process.arch,
+          nodeVersion: process.version,
+          agentVersion: config.agentVersion,
+          requestedControlPlaneMode: config.controlPlaneMode,
+          controlPlaneAuthMode: config.controlPlaneAuthMode,
+          managerApiConfigured: Boolean(config.managerApiUrl),
+          wssConfigured: Boolean(config.wssUrl),
+          capabilities: config.capabilities,
+          processId: process.pid,
+          uptimeSeconds: Math.round(process.uptime()),
+          runAsUser: safeUsername(),
+          note: payload.note ?? null,
+          requestedBy: payload.requestedBy ?? null,
+          expectedTransportMode: payload.expectedTransportMode ?? null,
+        },
+      };
+    }
     case 'stack.install': {
       const payload = stackSchema.parse(job.payload);
       const packages = await aptInstall(

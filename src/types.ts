@@ -1,4 +1,5 @@
 export type CapabilityKey =
+  | 'agent.diagnostics.snapshot'
   | 'stack.install'
   | 'stack.remove'
   | 'broker.config.apply'

@@ -25,6 +25,7 @@ This initial version supports:
 - polling for queued deployment jobs in HTTP mode
 - pushed job dispatch in WSS mode
 - typed handlers for:
+  - `agent.diagnostics.snapshot`
   - `stack.install`
   - `stack.remove`
   - `broker.config.apply`
@@ -59,6 +60,19 @@ The installer only auto-starts the service when the env file already contains:
 
 - `MANAGER_API_URL`, and
 - either a valid 24-character activation code or direct bootstrap credentials
+
+For automated or SSH-driven installs, the installer also honors agent runtime
+environment overrides passed to the root shell. Example:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ckhatri03/rectrix-agent/main/scripts/install.sh \
+  | sudo env \
+      MANAGER_API_URL=https://mqttmgmt.example.com \
+      AGENT_ACTIVATION_CODE=ABCD1234EFGH5678IJKL9012 \
+      CONTROL_PLANE_MODE=http \
+      LOG_LEVEL=debug \
+      bash
+```
 
 ## Runtime Configuration
 
@@ -189,6 +203,16 @@ forced `wss` mode.
   "unitsToStop": ["telegraf.service"],
   "unitsToDisable": [],
   "removePackages": false
+}
+```
+
+### `agent.diagnostics.snapshot`
+
+```json
+{
+  "note": "staging enrollment check",
+  "requestedBy": "agent-e2e-harness",
+  "expectedTransportMode": "http"
 }
 ```
 

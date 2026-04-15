@@ -24,3 +24,7 @@ This repository and its contents:
 
 Use of this software is at your own risk.
 
+Third-party components and names referenced by this repository, including
+Eclipse Mosquitto, Telegraf, MQTT, and Ubuntu, remain subject to their own
+upstream copyrights, licenses, standards terms, and trademark policies. This
+repository does not claim ownership over those third-party rights.

@@ -192,6 +192,12 @@ Rectrix agent only.
 See [LICENSE](LICENSE), [DISCLAIMER.md](DISCLAIMER.md), and
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+Third-party software, standards, and brands referenced by this repository,
+including Eclipse Mosquitto, Telegraf, MQTT, and Ubuntu, remain subject to
+their own upstream copyrights, licenses, and trademark policies.
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## Disclaimer
 
 This software can install packages, write configuration, and restart services

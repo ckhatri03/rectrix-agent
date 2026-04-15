@@ -179,3 +179,29 @@ Guardrails in this repo:
 - package operations are limited to `mosquitto` and `telegraf`
 - the service runs as `rectrix-agent` and escalates only through constrained
   `sudo`
+
+## Repository Policy
+
+This repository is public for distribution and inspection of the official
+Rectrix agent only.
+
+- external code changes are not accepted
+- public visibility does not grant modification or redistribution rights
+- official updates are maintained only by the repository owner
+
+See [LICENSE](LICENSE), [DISCLAIMER.md](DISCLAIMER.md), and
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Disclaimer
+
+This software can install packages, write configuration, and restart services
+on a remote Ubuntu VM. Validate it in a controlled environment before using it
+in production.
+
+Do not rely on this software as the sole safeguard for high-risk, safety
+critical, medical, or emergency systems.
+
+## License
+
+This repository is source-available but not open source. All rights are
+reserved unless the copyright holder grants written permission.

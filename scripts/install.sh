@@ -1,6 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+TTY_FD=""
+
+open_tty() {
+  if [[ -n "${TTY_FD}" ]]; then
+    return 0
+  fi
+
+  if exec {TTY_FD}<>/dev/tty; then
+    return 0
+  fi
+
+  TTY_FD=""
+  return 1
+}
+
+prompt_value() {
+  local prompt="$1"
+  local current_value="${2:-}"
+  local result=""
+
+  if [[ -n "${current_value}" ]]; then
+    printf '%s' "${current_value}"
+    return 0
+  fi
+
+  if ! open_tty; then
+    echo "Installer requires terminal input for: ${prompt}" >&2
+    echo "Set the required values in ${ENV_FILE} before using the curl-piped installer, or download and run the script directly." >&2
+    exit 1
+  fi
+
+  read -r -u "${TTY_FD}" -p "${prompt}" result
+  printf '%s' "${result}"
+}
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "install.sh must run as root" >&2
   exit 1
@@ -107,7 +142,7 @@ bootstrap_token="$(awk -F= '/^AGENT_BOOTSTRAP_TOKEN=/{print $2}' "${ENV_FILE}" |
 runtime_token="$(awk -F= '/^AGENT_RUNTIME_TOKEN=/{print $2}' "${ENV_FILE}" | tail -n 1)"
 
 if [[ -z "${manager_url}" || "${manager_url}" == "https://mqttmgmt.example.com" ]]; then
-  read -r -p "Manager API URL: " manager_url
+  manager_url="$(prompt_value "Manager API URL: " "${manager_url}")"
   if [[ -n "${manager_url}" ]]; then
     set_env_value "${ENV_FILE}" "MANAGER_API_URL" "${manager_url}"
   fi
@@ -120,7 +155,7 @@ if [[ -n "${agent_id}" && ( -n "${bootstrap_token}" || -n "${runtime_token}" ) ]
 fi
 
 if [[ -z "${activation_code}" ]]; then
-  read -r -p "24-character Rectrix activation code from email: " activation_code
+  activation_code="$(prompt_value "24-character Rectrix activation code from email: " "${activation_code}")"
   activation_code="$(printf '%s' "${activation_code}" | tr '[:lower:]' '[:upper:]')"
   if [[ -n "${activation_code}" ]]; then
     set_env_value "${ENV_FILE}" "AGENT_ACTIVATION_CODE" "${activation_code}"

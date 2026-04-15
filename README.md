@@ -17,7 +17,13 @@ This initial version supports:
 
 - activation against a private manager API
 - enrollment, heartbeat, and capability reporting
-- polling for queued deployment jobs
+- steady-state control over:
+  - `http`
+  - `rest` alias for `http`
+  - `wss`
+  - `auto` startup selection with `wss -> http` fallback
+- polling for queued deployment jobs in HTTP mode
+- pushed job dispatch in WSS mode
 - typed handlers for:
   - `stack.install`
   - `stack.remove`
@@ -73,6 +79,17 @@ AGENT_ID=agt_01
 AGENT_BOOTSTRAP_TOKEN=boot_xxx
 ```
 
+Serverless-ready WSS configuration:
+
+```env
+MANAGER_API_URL=https://mqttmgmt.example.com
+WSS_URL=wss://agent-control.example.com
+CONTROL_PLANE_MODE=auto
+CONTROL_PLANE_AUTH_MODE=token
+AGENT_ID=agt_01
+AGENT_RUNTIME_TOKEN=rt_xxx
+```
+
 ## Default Manager API Paths
 
 The agent assumes these default paths, all of which are configurable:
@@ -84,6 +101,21 @@ The agent assumes these default paths, all of which are configurable:
 - `POST /agent/jobs/next`
 - `POST /agent/jobs/:jobId/events`
 - `POST /agent/jobs/:jobId/complete`
+
+Activation and enrollment stay on HTTPS. The transport selection above applies
+to steady-state capability reporting, presence, job dispatch, job events, and
+job completion.
+
+## Control Plane Modes
+
+- `http`: existing REST heartbeat and REST job polling behavior
+- `rest`: accepted as an alias for `http`
+- `wss`: persistent outbound WebSocket control session; requires `WSS_URL`
+- `auto`: try `wss` first, then fall back to `http` on startup
+
+`CONTROL_PLANE_AUTH_MODE=token` is implemented now. `x509` is reserved for the
+later certificate phase and will currently fall back in `auto` mode or fail in
+forced `wss` mode.
 
 ## Job Payloads
 

@@ -1,7 +1,15 @@
 import os from 'node:os';
 import { config } from './config';
+import { extractJob } from './controlPlane/messageCodec';
 import { logger } from './logger';
-import { AgentJob, AgentState, CapabilityKey, SystemInfo } from './types';
+import {
+  AgentJob,
+  AgentState,
+  CapabilityKey,
+  ControlPlaneAuthMode,
+  ControlPlaneMode,
+  SystemInfo,
+} from './types';
 
 const joinUrl = (baseUrl: string, requestPath: string) =>
   new URL(
@@ -44,28 +52,28 @@ const request = async <T>(
   return undefined;
 };
 
-const extractJob = (raw: any): AgentJob | undefined => {
-  const candidate = raw?.job ?? raw;
-  if (!candidate) {
+const asControlPlaneMode = (value: unknown): ControlPlaneMode | undefined => {
+  if (typeof value !== 'string') {
     return undefined;
   }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'auto' || normalized === 'http' || normalized === 'rest' || normalized === 'wss') {
+    return normalized;
+  }
+  return undefined;
+};
 
-  const id =
-    candidate.id ??
-    candidate.jobId ??
-    candidate.agentJobId ??
-    candidate.job_uuid;
-  const type = candidate.type ?? candidate.jobType ?? candidate.job_type;
-  if (!id || !type) {
+const asControlPlaneAuthMode = (
+  value: unknown,
+): ControlPlaneAuthMode | undefined => {
+  if (typeof value !== 'string') {
     return undefined;
   }
-
-  return {
-    id: String(id),
-    type,
-    payload: candidate.payload ?? candidate.data ?? candidate,
-    raw: candidate,
-  } as AgentJob;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'auto' || normalized === 'token' || normalized === 'x509') {
+    return normalized;
+  }
+  return undefined;
 };
 
 export class ManagerClient {
@@ -108,8 +116,15 @@ export class ManagerClient {
       agentId: response?.agentId,
       bootstrapToken: response?.bootstrapToken,
       managerApiUrl: response?.managerApiUrl ?? this.baseUrl(),
+      wssUrl: response?.wssUrl ?? response?.controlPlane?.wssUrl,
       pollIntervalMs: response?.pollIntervalMs,
       heartbeatIntervalMs: response?.heartbeatIntervalMs,
+      requestedControlPlaneMode: asControlPlaneMode(
+        response?.controlPlaneMode ?? response?.controlPlane?.mode,
+      ),
+      requestedControlPlaneAuthMode: asControlPlaneAuthMode(
+        response?.controlPlaneAuthMode ?? response?.controlPlane?.authMode,
+      ),
     };
   }
 
@@ -131,8 +146,17 @@ export class ManagerClient {
       agentId: response?.agentId ?? this.state.agentId,
       runtimeToken: response?.runtimeToken ?? response?.agentToken,
       managerApiUrl: response?.managerApiUrl ?? this.baseUrl(),
+      wssUrl: response?.wssUrl ?? response?.controlPlane?.wssUrl ?? this.state.wssUrl,
       pollIntervalMs: response?.pollIntervalMs,
       heartbeatIntervalMs: response?.heartbeatIntervalMs,
+      requestedControlPlaneMode:
+        asControlPlaneMode(
+          response?.controlPlaneMode ?? response?.controlPlane?.mode,
+        ) ?? this.state.requestedControlPlaneMode,
+      requestedControlPlaneAuthMode:
+        asControlPlaneAuthMode(
+          response?.controlPlaneAuthMode ?? response?.controlPlane?.authMode,
+        ) ?? this.state.requestedControlPlaneAuthMode,
     };
   }
 

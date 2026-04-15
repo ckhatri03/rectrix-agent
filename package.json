@@ -14,12 +14,13 @@
   "dependencies": {
     "dotenv": "^16.6.1",
     "pino": "^9.11.0",
+    "ws": "^8.20.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }
 }
-

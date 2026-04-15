@@ -7,14 +7,27 @@ export type CapabilityKey =
   | 'telegraf.remove';
 
 export type AgentJobType = CapabilityKey;
+export type ControlPlaneMode = 'auto' | 'http' | 'rest' | 'wss';
+export type ActiveControlPlaneMode = 'http' | 'wss';
+export type ControlPlaneAuthMode = 'auto' | 'token' | 'x509';
+export type ActiveControlPlaneAuthMode = 'token' | 'x509';
+export type JobEventLevel = 'info' | 'error';
+export type JobExecutionStatus = 'succeeded' | 'failed';
 
 export interface AgentState {
   agentId?: string;
   bootstrapToken?: string;
   runtimeToken?: string;
   managerApiUrl?: string;
+  wssUrl?: string;
   pollIntervalMs?: number;
   heartbeatIntervalMs?: number;
+  requestedControlPlaneMode?: ControlPlaneMode;
+  activeControlPlaneMode?: ActiveControlPlaneMode;
+  requestedControlPlaneAuthMode?: ControlPlaneAuthMode;
+  activeControlPlaneAuthMode?: ActiveControlPlaneAuthMode;
+  lastSuccessfulWssConnectAt?: string;
+  lastFallbackReason?: string;
 }
 
 export interface ManagedFile {

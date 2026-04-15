@@ -1,0 +1,18 @@
+[Unit]
+Description=Rectrix Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rectrix-agent
+Group=rectrix-agent
+WorkingDirectory=/opt/rectrix-agent/app
+EnvironmentFile=/etc/rectrix-agent/agent.env
+ExecStart=/usr/bin/node /opt/rectrix-agent/app/dist/index.js
+Restart=always
+RestartSec=5
+StateDirectory=rectrix-agent
+
+[Install]
+WantedBy=multi-user.target

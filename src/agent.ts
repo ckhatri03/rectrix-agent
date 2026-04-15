@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import { config } from './config';
+import { createControlPlaneTransport } from './controlPlane';
+import { ControlPlaneTransport } from './controlPlane/types';
 import { updateEnvFile } from './envFile';
 import { runJob } from './jobHandlers';
 import { logger } from './logger';
@@ -45,18 +47,28 @@ const getSystemInfo = async (): Promise<SystemInfo> => {
 export class AgentService {
   private state: AgentState = {};
   private stopped = false;
+  private transport: ControlPlaneTransport | null = null;
 
   async start(): Promise<void> {
     const persistedState = await loadState(config.stateFile);
     this.state = {
       ...persistedState,
       managerApiUrl: config.managerApiUrl ?? persistedState.managerApiUrl,
+      wssUrl: config.wssUrl ?? persistedState.wssUrl,
       agentId: config.agentId ?? persistedState.agentId,
       bootstrapToken: config.bootstrapToken ?? persistedState.bootstrapToken,
       runtimeToken: config.runtimeToken ?? persistedState.runtimeToken,
       pollIntervalMs: persistedState.pollIntervalMs ?? config.pollIntervalMs,
       heartbeatIntervalMs:
         persistedState.heartbeatIntervalMs ?? config.heartbeatIntervalMs,
+      requestedControlPlaneMode:
+        persistedState.requestedControlPlaneMode ?? config.controlPlaneMode,
+      activeControlPlaneMode: persistedState.activeControlPlaneMode,
+      requestedControlPlaneAuthMode:
+        persistedState.requestedControlPlaneAuthMode ?? config.controlPlaneAuthMode,
+      activeControlPlaneAuthMode: persistedState.activeControlPlaneAuthMode,
+      lastSuccessfulWssConnectAt: persistedState.lastSuccessfulWssConnectAt,
+      lastFallbackReason: persistedState.lastFallbackReason,
     };
 
     const system = await getSystemInfo();
@@ -64,32 +76,52 @@ export class AgentService {
 
     process.on('SIGINT', () => {
       this.stopped = true;
+      void this.transport?.stop();
     });
     process.on('SIGTERM', () => {
       this.stopped = true;
+      void this.transport?.stop();
     });
 
-    const client = new ManagerClient(this.state, system);
     const authToken = this.state.runtimeToken ?? this.state.bootstrapToken;
     if (!this.state.agentId || !authToken) {
       throw new Error('Agent bootstrap did not yield agent credentials');
     }
 
-    await client.sendCapabilities(authToken, config.capabilities);
+    this.transport = await createControlPlaneTransport({
+      state: this.state,
+      system,
+      authToken,
+      capabilities: config.capabilities,
+      onStateChange: async (update) => {
+        await this.updateState(update);
+      },
+    });
+
+    await this.transport.sendCapabilities();
 
     logger.info(
       {
         agentId: this.state.agentId,
         managerApiUrl: this.state.managerApiUrl,
+        wssUrl: this.state.wssUrl,
         hostname: system.hostname,
+        requestedControlPlaneMode: this.state.requestedControlPlaneMode,
+        activeControlPlaneMode: this.transport.mode,
+        activeControlPlaneAuthMode: this.transport.authMode,
+        lastFallbackReason: this.state.lastFallbackReason,
       },
       'rectrix-agent started',
     );
 
-    await Promise.all([
-      this.heartbeatLoop(client, authToken),
-      this.jobLoop(client, authToken),
-    ]);
+    try {
+      await Promise.all([
+        this.heartbeatLoop(this.transport),
+        this.jobLoop(this.transport),
+      ]);
+    } finally {
+      await this.transport.stop();
+    }
   }
 
   private async persistRuntimeCredentials(): Promise<void> {
@@ -98,6 +130,8 @@ export class AgentService {
     }
 
     await updateEnvFile(config.envFilePath, {
+      MANAGER_API_URL: this.state.managerApiUrl ?? '',
+      WSS_URL: this.state.wssUrl ?? '',
       AGENT_ID: this.state.agentId,
       AGENT_RUNTIME_TOKEN: this.state.runtimeToken,
       AGENT_BOOTSTRAP_TOKEN: '',
@@ -108,7 +142,16 @@ export class AgentService {
       HEARTBEAT_INTERVAL_MS: String(
         this.state.heartbeatIntervalMs ?? config.heartbeatIntervalMs,
       ),
+      CONTROL_PLANE_MODE:
+        this.state.requestedControlPlaneMode ?? config.controlPlaneMode,
+      CONTROL_PLANE_AUTH_MODE:
+        this.state.requestedControlPlaneAuthMode ?? config.controlPlaneAuthMode,
     });
+  }
+
+  private async updateState(update: Partial<AgentState>): Promise<void> {
+    Object.assign(this.state, update);
+    await saveState(config.stateFile, this.state);
   }
 
   private async bootstrap(system: SystemInfo): Promise<void> {
@@ -116,8 +159,7 @@ export class AgentService {
 
     if (!this.state.agentId || !(this.state.bootstrapToken || this.state.runtimeToken)) {
       logger.info('no persisted agent credentials found, activating');
-      this.state = { ...this.state, ...(await client.activate()) };
-      await saveState(config.stateFile, this.state);
+      await this.updateState(await client.activate());
     }
 
     if (this.state.runtimeToken) {
@@ -131,54 +173,63 @@ export class AgentService {
     }
 
     logger.info({ agentId: this.state.agentId }, 'enrolling with manager');
-    this.state = { ...this.state, ...(await client.enroll(enrollmentToken)) };
-    await saveState(config.stateFile, this.state);
+    await this.updateState(await client.enroll(enrollmentToken));
     await this.persistRuntimeCredentials();
   }
 
-  private async heartbeatLoop(
-    client: ManagerClient,
-    authToken: string,
-  ): Promise<void> {
+  private heartbeatDelayMs(transport: ControlPlaneTransport): number {
+    if (transport.mode === 'wss') {
+      return config.wssPingIntervalMs;
+    }
+    return this.state.heartbeatIntervalMs ?? config.heartbeatIntervalMs;
+  }
+
+  private async heartbeatLoop(transport: ControlPlaneTransport): Promise<void> {
     while (!this.stopped) {
       try {
-        await client.sendHeartbeat(authToken, config.capabilities);
+        await transport.sendHeartbeat();
         logger.debug('heartbeat sent');
       } catch (error) {
         logger.error({ error }, 'heartbeat failed');
       }
-      await delay(this.state.heartbeatIntervalMs ?? config.heartbeatIntervalMs);
+      await delay(this.heartbeatDelayMs(transport));
     }
   }
 
-  private async jobLoop(client: ManagerClient, authToken: string): Promise<void> {
+  private async jobLoop(transport: ControlPlaneTransport): Promise<void> {
     while (!this.stopped) {
       try {
-        const job = await client.fetchNextJob(authToken, config.capabilities);
+        const job = await transport.nextJob();
         if (!job) {
-          await delay(this.state.pollIntervalMs ?? config.pollIntervalMs);
+          if (transport.mode === 'http') {
+            await delay(this.state.pollIntervalMs ?? config.pollIntervalMs);
+          }
           continue;
         }
 
         logger.info({ jobId: job.id, jobType: job.type }, 'running job');
-        await client.sendJobEvent(authToken, job.id, 'info', 'job accepted');
+        await transport.sendJobAccepted(job.id);
 
         try {
           const result = await runJob(job);
-          await client.completeJob(authToken, job.id, 'succeeded', {
+          await transport.completeJob(job.id, 'succeeded', {
             summary: result.summary,
             details: result.details,
           });
           logger.info({ jobId: job.id, jobType: job.type }, 'job completed');
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          await client.sendJobEvent(authToken, job.id, 'error', message);
-          await client.completeJob(authToken, job.id, 'failed', undefined, message);
+          await transport.sendJobEvent(job.id, 'error', message);
+          await transport.completeJob(job.id, 'failed', undefined, message);
           logger.error({ error, jobId: job.id, jobType: job.type }, 'job failed');
         }
       } catch (error) {
         logger.error({ error }, 'job poll failed');
-        await delay(this.state.pollIntervalMs ?? config.pollIntervalMs);
+        if (transport.mode === 'http') {
+          await delay(this.state.pollIntervalMs ?? config.pollIntervalMs);
+        } else {
+          await delay(config.wssBackoffInitialMs);
+        }
       }
     }
   }

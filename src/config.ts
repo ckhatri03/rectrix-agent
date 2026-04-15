@@ -1,6 +1,6 @@
 import os from 'node:os';
 import dotenv from 'dotenv';
-import { CapabilityKey } from './types';
+import { CapabilityKey, ControlPlaneAuthMode, ControlPlaneMode } from './types';
 
 dotenv.config();
 
@@ -38,6 +38,26 @@ const asList = (name: string, fallback: string[]) => {
     .filter(Boolean);
 };
 
+const asEnum = <T extends string>(
+  name: string,
+  fallback: T,
+  allowedValues: readonly T[],
+): T => {
+  const raw = asString(process.env[name])?.toLowerCase() as T | undefined;
+  if (!raw) {
+    return fallback;
+  }
+  if (!allowedValues.includes(raw)) {
+    throw new Error(
+      `Invalid ${name} value: ${raw}. Expected one of ${allowedValues.join(', ')}`,
+    );
+  }
+  return raw;
+};
+
+const CONTROL_PLANE_MODES = ['auto', 'http', 'rest', 'wss'] as const satisfies ReadonlyArray<ControlPlaneMode>;
+const CONTROL_PLANE_AUTH_MODES = ['auto', 'token', 'x509'] as const satisfies ReadonlyArray<ControlPlaneAuthMode>;
+
 export const CAPABILITIES: CapabilityKey[] = [
   'stack.install',
   'stack.remove',
@@ -52,6 +72,7 @@ export const config = {
   logLevel: process.env.LOG_LEVEL ?? 'info',
   agentVersion: process.env.AGENT_VERSION ?? '0.1.0',
   managerApiUrl: asString(process.env.MANAGER_API_URL),
+  wssUrl: asString(process.env.WSS_URL),
   activationCode: asString(process.env.AGENT_ACTIVATION_CODE)?.toUpperCase(),
   agentId: asString(process.env.AGENT_ID),
   bootstrapToken: asString(process.env.AGENT_BOOTSTRAP_TOKEN),
@@ -61,6 +82,22 @@ export const config = {
   pollIntervalMs: asNumber('POLL_INTERVAL_MS', 10000),
   heartbeatIntervalMs: asNumber('HEARTBEAT_INTERVAL_MS', 30000),
   httpTimeoutMs: asNumber('HTTP_TIMEOUT_MS', 15000),
+  controlPlaneMode: asEnum<ControlPlaneMode>(
+    'CONTROL_PLANE_MODE',
+    'http',
+    CONTROL_PLANE_MODES,
+  ),
+  controlPlaneAuthMode: asEnum<ControlPlaneAuthMode>(
+    'CONTROL_PLANE_AUTH_MODE',
+    'token',
+    CONTROL_PLANE_AUTH_MODES,
+  ),
+  wssConnectTimeoutMs: asNumber('WSS_CONNECT_TIMEOUT_MS', 10000),
+  wssPingIntervalMs: asNumber('WSS_PING_INTERVAL_MS', 30000),
+  wssPongTimeoutMs: asNumber('WSS_PONG_TIMEOUT_MS', 10000),
+  wssForceReconnectMs: asNumber('WSS_FORCE_RECONNECT_MS', 3600000),
+  wssBackoffInitialMs: asNumber('WSS_BACKOFF_INITIAL_MS', 1000),
+  wssBackoffMaxMs: asNumber('WSS_BACKOFF_MAX_MS', 30000),
   activationPath: process.env.ACTIVATION_PATH ?? '/public-agent/activate',
   enrollPath: process.env.ENROLL_PATH ?? '/agent/enroll',
   heartbeatPath: process.env.HEARTBEAT_PATH ?? '/agent/heartbeat',

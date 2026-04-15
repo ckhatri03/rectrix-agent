@@ -32,6 +32,21 @@ require_cmd node
 require_cmd npm
 require_cmd systemctl
 
+set_env_value() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local escaped_value
+
+  escaped_value="$(printf '%s' "${value}" | sed -e 's/[&|\\]/\\&/g')"
+
+  if grep -q "^${key}=" "${file}" 2>/dev/null; then
+    sed -i "s|^${key}=.*$|${key}=${escaped_value}|" "${file}"
+  else
+    printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+  fi
+}
+
 if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
   useradd --system --home-dir "${INSTALL_ROOT}" --shell /usr/sbin/nologin "${SERVICE_USER}"
 fi
@@ -69,9 +84,12 @@ chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}" "${STATE_DIR}"
 install -D -m 0644 "${APP_DIR}/systemd/rectrix-agent.service" "${SYSTEMD_UNIT_DEST}"
 
 if [[ ! -f "${ENV_FILE}" ]]; then
-  install -D -m 0640 "${APP_DIR}/config/agent.example.env" "${ENV_FILE}"
+  install -D -m 0660 "${APP_DIR}/config/agent.example.env" "${ENV_FILE}"
   chown root:"${SERVICE_USER}" "${ENV_FILE}"
   echo "Created ${ENV_FILE}; update it before first start."
+else
+  chown root:"${SERVICE_USER}" "${ENV_FILE}" || true
+  chmod 0660 "${ENV_FILE}" || true
 fi
 
 cat > "${SUDOERS_FILE}" <<EOF
@@ -83,15 +101,16 @@ systemctl daemon-reload
 systemctl enable rectrix-agent.service
 
 manager_url="$(awk -F= '/^MANAGER_API_URL=/{print $2}' "${ENV_FILE}" | tail -n 1)"
-activation_user_id="$(awk -F= '/^ACTIVATION_USER_ID=/{print $2}' "${ENV_FILE}" | tail -n 1)"
-activation_license_key="$(awk -F= '/^ACTIVATION_LICENSE_KEY=/{print $2}' "${ENV_FILE}" | tail -n 1)"
+activation_code="$(awk -F= '/^AGENT_ACTIVATION_CODE=/{print $2}' "${ENV_FILE}" | tail -n 1 | tr -d '\"' | tr '[:lower:]' '[:upper:]')"
 agent_id="$(awk -F= '/^AGENT_ID=/{print $2}' "${ENV_FILE}" | tail -n 1)"
 bootstrap_token="$(awk -F= '/^AGENT_BOOTSTRAP_TOKEN=/{print $2}' "${ENV_FILE}" | tail -n 1)"
 runtime_token="$(awk -F= '/^AGENT_RUNTIME_TOKEN=/{print $2}' "${ENV_FILE}" | tail -n 1)"
 
 if [[ -z "${manager_url}" || "${manager_url}" == "https://mqttmgmt.example.com" ]]; then
-  echo "Agent installed but not started because MANAGER_API_URL is not configured in ${ENV_FILE}."
-  exit 0
+  read -r -p "Manager API URL: " manager_url
+  if [[ -n "${manager_url}" ]]; then
+    set_env_value "${ENV_FILE}" "MANAGER_API_URL" "${manager_url}"
+  fi
 fi
 
 if [[ -n "${agent_id}" && ( -n "${bootstrap_token}" || -n "${runtime_token}" ) ]]; then
@@ -100,10 +119,18 @@ if [[ -n "${agent_id}" && ( -n "${bootstrap_token}" || -n "${runtime_token}" ) ]
   exit 0
 fi
 
-if [[ -n "${activation_user_id}" && -n "${activation_license_key}" ]]; then
+if [[ -z "${activation_code}" ]]; then
+  read -r -p "24-character Rectrix activation code from email: " activation_code
+  activation_code="$(printf '%s' "${activation_code}" | tr '[:lower:]' '[:upper:]')"
+  if [[ -n "${activation_code}" ]]; then
+    set_env_value "${ENV_FILE}" "AGENT_ACTIVATION_CODE" "${activation_code}"
+  fi
+fi
+
+if [[ "${activation_code}" =~ ^[A-Z0-9]{24}$ ]]; then
   systemctl restart rectrix-agent.service
   echo "Rectrix agent installed and started."
   exit 0
 fi
 
-echo "Agent installed but not started because ${ENV_FILE} is missing activation or bootstrap credentials."
+echo "Agent installed but not started because ${ENV_FILE} is missing a valid 24-character activation code from Rectrix or direct bootstrap credentials."

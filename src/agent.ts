@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import { config } from './config';
+import { updateEnvFile } from './envFile';
 import { runJob } from './jobHandlers';
 import { logger } from './logger';
 import { ManagerClient } from './managerClient';
@@ -91,6 +92,25 @@ export class AgentService {
     ]);
   }
 
+  private async persistRuntimeCredentials(): Promise<void> {
+    if (!this.state.agentId || !this.state.runtimeToken) {
+      return;
+    }
+
+    await updateEnvFile(config.envFilePath, {
+      AGENT_ID: this.state.agentId,
+      AGENT_RUNTIME_TOKEN: this.state.runtimeToken,
+      AGENT_BOOTSTRAP_TOKEN: '',
+      AGENT_ACTIVATION_CODE: '',
+      POLL_INTERVAL_MS: String(
+        this.state.pollIntervalMs ?? config.pollIntervalMs,
+      ),
+      HEARTBEAT_INTERVAL_MS: String(
+        this.state.heartbeatIntervalMs ?? config.heartbeatIntervalMs,
+      ),
+    });
+  }
+
   private async bootstrap(system: SystemInfo): Promise<void> {
     const client = new ManagerClient(this.state, system);
 
@@ -100,14 +120,20 @@ export class AgentService {
       await saveState(config.stateFile, this.state);
     }
 
-    const enrollmentToken = this.state.runtimeToken ?? this.state.bootstrapToken;
+    if (this.state.runtimeToken) {
+      await this.persistRuntimeCredentials();
+      return;
+    }
+
+    const enrollmentToken = this.state.bootstrapToken;
     if (!enrollmentToken) {
-      throw new Error('Missing bootstrap or runtime token after activation');
+      throw new Error('Missing bootstrap token after activation');
     }
 
     logger.info({ agentId: this.state.agentId }, 'enrolling with manager');
     this.state = { ...this.state, ...(await client.enroll(enrollmentToken)) };
     await saveState(config.stateFile, this.state);
+    await this.persistRuntimeCredentials();
   }
 
   private async heartbeatLoop(

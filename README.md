@@ -41,14 +41,18 @@ The installer:
 - installs `/etc/systemd/system/rectrix-agent.service`
 - creates `/etc/rectrix-agent/agent.env` if missing
 - creates a restricted sudoers file for package, file, and systemd operations
+- prompts for the Rectrix-issued 24-character activation code during install
+  when direct bootstrap credentials are not already present
+- expects that activation code to be supplied separately by Rectrix, for
+  example by customer email
 
 After install, update `/etc/rectrix-agent/agent.env` with your manager URL and
-either activation credentials or direct bootstrap credentials.
+either the Rectrix-issued activation code or direct bootstrap credentials.
 
 The installer only auto-starts the service when the env file already contains:
 
 - `MANAGER_API_URL`, and
-- either activation credentials or direct bootstrap credentials
+- either a valid 24-character activation code or direct bootstrap credentials
 
 ## Runtime Configuration
 
@@ -58,8 +62,7 @@ Minimum fresh-install configuration:
 
 ```env
 MANAGER_API_URL=https://mqttmgmt.example.com
-ACTIVATION_USER_ID=customer-123
-ACTIVATION_LICENSE_KEY=LIC-XXXX-XXXX
+AGENT_ACTIVATION_CODE=ABCD1234EFGH5678IJKL9012
 ```
 
 Direct bootstrap configuration:
@@ -179,6 +182,21 @@ Guardrails in this repo:
 - package operations are limited to `mosquitto` and `telegraf`
 - the service runs as `rectrix-agent` and escalates only through constrained
   `sudo`
+
+## Activation Flow
+
+Fresh deployment flow:
+
+1. Rectrix sends the user a 24-character alphanumeric activation code in a
+   separate email.
+2. The installer writes that code to the edge agent env file.
+3. The agent exchanges the code for a bootstrap token through
+   `POST /public-agent/activate`.
+4. The agent enrolls through `POST /agent/enroll`.
+5. The manager invalidates the one-time activation code and returns a permanent
+   runtime token.
+6. The agent saves that permanent runtime token into its own edge env file and
+   clears the activation code.
 
 ## Repository Policy
 

@@ -87,16 +87,15 @@ export class ManagerClient {
   }
 
   async activate(): Promise<Partial<AgentState>> {
-    if (!config.activationUserId || !config.activationLicenseKey) {
-      throw new Error('Activation requires ACTIVATION_USER_ID and ACTIVATION_LICENSE_KEY');
+    if (!config.activationCode) {
+      throw new Error('Activation requires AGENT_ACTIVATION_CODE');
     }
 
     const response = await request<any>(this.baseUrl(), config.activationPath, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        userId: config.activationUserId,
-        licenseKey: config.activationLicenseKey,
+        activationCode: config.activationCode,
         hostname: this.system.hostname,
         os: this.system.os,
         osVersion: this.system.osVersion,
@@ -222,4 +221,3 @@ export class ManagerClient {
     });
   }
 }
-

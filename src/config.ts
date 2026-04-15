@@ -52,11 +52,11 @@ export const config = {
   logLevel: process.env.LOG_LEVEL ?? 'info',
   agentVersion: process.env.AGENT_VERSION ?? '0.1.0',
   managerApiUrl: asString(process.env.MANAGER_API_URL),
-  activationUserId: asString(process.env.ACTIVATION_USER_ID),
-  activationLicenseKey: asString(process.env.ACTIVATION_LICENSE_KEY),
+  activationCode: asString(process.env.AGENT_ACTIVATION_CODE)?.toUpperCase(),
   agentId: asString(process.env.AGENT_ID),
   bootstrapToken: asString(process.env.AGENT_BOOTSTRAP_TOKEN),
   runtimeToken: asString(process.env.AGENT_RUNTIME_TOKEN),
+  envFilePath: process.env.AGENT_ENV_FILE_PATH ?? '/etc/rectrix-agent/agent.env',
   stateFile: process.env.STATE_FILE ?? '/var/lib/rectrix-agent/state.json',
   pollIntervalMs: asNumber('POLL_INTERVAL_MS', 10000),
   heartbeatIntervalMs: asNumber('HEARTBEAT_INTERVAL_MS', 30000),
@@ -90,4 +90,3 @@ export const config = {
   capabilities: CAPABILITIES,
   hostname: os.hostname(),
 };
-

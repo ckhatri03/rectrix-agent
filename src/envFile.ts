@@ -5,7 +5,10 @@ const escapeEnvValue = (value: string): string => {
   if (value === '') {
     return '';
   }
-  if (/[\s#"']/u.test(value)) {
+
+  // Keep persisted env files safe for both systemd EnvironmentFile parsing and
+  // occasional shell-based inspection/source during debugging.
+  if (!/^[A-Za-z0-9_./:-]+$/u.test(value)) {
     return JSON.stringify(value);
   }
   return value;
@@ -50,4 +53,3 @@ export const updateEnvFile = async (
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, nextContents, 'utf8');
 };
-

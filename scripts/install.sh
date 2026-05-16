@@ -61,11 +61,103 @@ require_cmd() {
   fi
 }
 
+version_ge() {
+  local current="$1"
+  local required="$2"
+
+  [[ "$(printf '%s\n%s\n' "${required}" "${current}" | sort -V | head -n 1)" == "${required}" ]]
+}
+
+detect_os() {
+  local id_like=""
+
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s|%s\n' "${ID:-}" "${ID_LIKE:-}"
+    return 0
+  fi
+
+  printf '|\n'
+}
+
+install_nodejs_20_debian() {
+  local os_info
+  local os_id
+  local os_like
+  local node_major="${NODE_MAJOR_VERSION:-20}"
+  local keyring_dir="/etc/apt/keyrings"
+  local keyring_file="${keyring_dir}/nodesource.gpg"
+  local source_list="/etc/apt/sources.list.d/nodesource.list"
+  local arch
+
+  os_info="$(detect_os)"
+  os_id="${os_info%%|*}"
+  os_like="${os_info#*|}"
+
+  case " ${os_id} ${os_like} " in
+    *" ubuntu "*|*" debian "*)
+      ;;
+    *)
+      echo "Automatic Node.js installation is only supported on Ubuntu/Debian. Install Node.js >= ${node_major} manually and rerun the installer." >&2
+      exit 1
+      ;;
+  esac
+
+  export DEBIAN_FRONTEND=noninteractive
+
+  apt-get update
+  apt-get install -y ca-certificates curl gnupg
+
+  mkdir -p "${keyring_dir}"
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor --yes -o "${keyring_file}"
+  chmod 0644 "${keyring_file}"
+
+  arch="$(dpkg --print-architecture)"
+  cat > "${source_list}" <<EOF
+deb [arch=${arch} signed-by=${keyring_file}] https://deb.nodesource.com/node_${node_major}.x nodistro main
+EOF
+
+  apt-get update
+  apt-get install -y nodejs
+}
+
+ensure_node_runtime() {
+  local required_major="${NODE_MAJOR_VERSION:-20}"
+  local required_version="${required_major}.0.0"
+  local current_version=""
+
+  if command -v node >/dev/null 2>&1; then
+    current_version="$(node -v 2>/dev/null | sed 's/^v//')"
+  fi
+
+  if [[ -n "${current_version}" ]] && version_ge "${current_version}" "${required_version}" && command -v npm >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ -n "${current_version}" ]]; then
+    echo "Detected Node.js ${current_version}; upgrading to Node.js >= ${required_major}." >&2
+  else
+    echo "Node.js >= ${required_major} is required; installing it now." >&2
+  fi
+
+  install_nodejs_20_debian
+
+  require_cmd node
+  require_cmd npm
+
+  current_version="$(node -v 2>/dev/null | sed 's/^v//')"
+  if [[ -z "${current_version}" ]] || ! version_ge "${current_version}" "${required_version}"; then
+    echo "Installed Node.js version ${current_version:-unknown} does not satisfy >= ${required_version}." >&2
+    exit 1
+  fi
+}
+
 require_cmd curl
 require_cmd tar
-require_cmd node
-require_cmd npm
 require_cmd systemctl
+ensure_node_runtime
 
 set_env_value() {
   local file="$1"

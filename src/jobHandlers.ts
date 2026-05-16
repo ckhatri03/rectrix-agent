@@ -1,11 +1,19 @@
+import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import { z } from 'zod';
 import { config } from './config';
 import {
   aptInstall,
   aptRemove,
+  binaryExists,
+  chmodManagedPath,
+  chownManagedPath,
+  ensureManagedDirectory,
+  ensureManagedFile,
   getUnitState,
+  managedPathExists,
   removeManagedFiles,
+  runRootBinary,
   systemctl,
   writeManagedFiles,
 } from './system';
@@ -54,6 +62,62 @@ const stackSchema = z.object({
   unitsToDisable: unitsSchema.optional(),
 });
 
+const brokerCredentialSchema = z.object({
+  username: z.string().min(1),
+  password: z.string(),
+});
+
+const brokerApplySchema = z.object({
+  brokerId: z.number().int().positive(),
+  serviceName: z.string().min(1),
+  configPath: z.string().min(1),
+  passwordFilePath: z.string().min(1),
+  persistenceLocation: z.string().min(1),
+  unitPath: z.string().min(1),
+  configContents: z.string(),
+  unitContents: z.string(),
+  mqttCredentials: z.array(brokerCredentialSchema).default([]),
+});
+
+const brokerControlSchema = z.object({
+  brokerId: z.number().int().positive(),
+  serviceName: z.string().min(1),
+});
+
+const brokerRemoveSchema = z.object({
+  brokerId: z.number().int().positive(),
+  serviceName: z.string().min(1),
+  configPath: z.string().min(1),
+  passwordFilePath: z.string().min(1),
+  aclFilePath: z.string().min(1),
+  persistenceLocation: z.string().min(1),
+  unitPath: z.string().min(1),
+});
+
+const telegrafRuntimeApplySchema = z.object({
+  brokerId: z.number().int().positive(),
+  serviceName: z.string().min(1),
+  configPath: z.string().min(1),
+  unitPath: z.string().min(1),
+  configContents: z.string(),
+  unitContents: z.string(),
+  tlsAccessPaths: z.array(z.string().min(1)).optional().default([]),
+});
+
+const telegrafRuntimeRemoveSchema = z.object({
+  brokerId: z.number().int().positive(),
+  serviceName: z.string().min(1),
+  configPath: z.string().min(1),
+  unitPath: z.string().min(1),
+});
+
+const mqttDiagnosticsSchema = z.object({
+  brokerId: z.number().int().positive(),
+  serviceName: z.string().min(1),
+  configPath: z.string().min(1),
+  maxMessages: z.number().int().positive().max(100).optional().default(20),
+});
+
 const maybeReloadSystemd = async (files: ManagedFile[]) => {
   const changedSystemdUnits = files.some((file) =>
     file.path.startsWith('/etc/systemd/system/'),
@@ -78,6 +142,187 @@ const safeUsername = () => {
     return os.userInfo().username;
   } catch {
     return 'unknown';
+  }
+};
+
+const assertAllowedServiceName = (
+  serviceName: string,
+  suffix: 'mqtt' | 'telegraf',
+) => {
+  const expected = suffix === 'mqtt' ? /_mqtt$/i : /_telegraf$/i;
+  if (!/^[a-z0-9_]+$/i.test(serviceName) || !expected.test(serviceName)) {
+    throw new Error(`Service name ${serviceName} is not allowed.`);
+  }
+  return serviceName;
+};
+
+const requiresAclForTelegraf = (filePath: string) =>
+  /(^|\/)(privkey\.pem|.*\.key)$/i.test(filePath.trim());
+
+const buildParentPaths = (filePath: string, stopAt: string): string[] => {
+  const normalizedPath = filePath.trim().replace(/\/+$/, '');
+  const normalizedStop = stopAt.trim().replace(/\/+$/, '');
+  if (
+    !normalizedPath.startsWith(`${normalizedStop}/`) &&
+    normalizedPath !== normalizedStop
+  ) {
+    return [];
+  }
+
+  const targetDir = normalizedPath.substring(0, normalizedPath.lastIndexOf('/'));
+  if (!targetDir || targetDir.length < normalizedStop.length) {
+    return [];
+  }
+
+  const paths: string[] = [];
+  let currentDir = targetDir;
+  while (
+    currentDir === normalizedStop ||
+    currentDir.startsWith(`${normalizedStop}/`)
+  ) {
+    paths.unshift(currentDir);
+    if (currentDir === normalizedStop) {
+      break;
+    }
+    currentDir = currentDir.substring(0, currentDir.lastIndexOf('/'));
+  }
+
+  return paths;
+};
+
+const parsePersistenceConfig = (contents: string) => {
+  const defaults = {
+    persistence: false,
+    persistenceLocation: '/var/lib/mosquitto/',
+  };
+
+  let persistence: boolean | null = null;
+  let persistenceLocation: string | null = null;
+
+  contents.split('\n').forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      return;
+    }
+    const [rawKey, ...rest] = trimmed.split(/\s+/);
+    const key = rawKey.toLowerCase();
+    const value = rest.join(' ');
+
+    if (key === 'persistence') {
+      persistence = value.toLowerCase() === 'true';
+    } else if (key === 'persistence_location') {
+      persistenceLocation = value;
+    }
+  });
+
+  return {
+    persistence: persistence ?? defaults.persistence,
+    persistenceLocation: persistenceLocation ?? defaults.persistenceLocation,
+  };
+};
+
+const resolveDbPath = (persistenceLocation: string) => {
+  const trimmed = persistenceLocation.trim();
+  if (!trimmed) {
+    return '/var/lib/mosquitto/mqtt.db';
+  }
+  if (/\.(db|sqlite|sqlite3)$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `${trimmed.replace(/\/+$/, '')}/mqtt.db`;
+};
+
+const parseTableList = (value: string) =>
+  value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+const pickMessageTable = (tables: string[]) =>
+  tables.find((table) => /message/i.test(table)) ?? tables[0] ?? null;
+
+const sanitizeTableName = (value: string) => {
+  if (!/^[A-Za-z0-9_]+$/.test(value)) {
+    throw new Error('Invalid table name in mqtt.db');
+  }
+  return value;
+};
+
+const summarizeUnitStatesForService = async (serviceName: string) => {
+  const unit = `${serviceName}.service`;
+  return {
+    [unit]: await getUnitState(unit),
+  };
+};
+
+const syncMosquittoPasswords = async (
+  passwordFilePath: string,
+  credentials: Array<{ username: string; password: string }>,
+) => {
+  await ensureManagedFile(passwordFilePath, {
+    mode: '0640',
+    owner: 'mosquitto',
+    group: 'mosquitto',
+  });
+
+  for (const credential of credentials) {
+    await runRootBinary(config.mosquittoPasswdBin, [
+      '-b',
+      passwordFilePath,
+      credential.username,
+      credential.password,
+    ]);
+  }
+
+  await chownManagedPath(passwordFilePath, 'mosquitto', 'mosquitto');
+  await chmodManagedPath(passwordFilePath, '0640');
+};
+
+const grantTelegrafTlsAccess = async (paths: string[]) => {
+  const normalizedPaths = [...new Set(
+    paths
+      .map((value) => value.trim())
+      .filter((value) => value.startsWith('/etc/mosquitto/certs/')),
+  )];
+  if (normalizedPaths.length === 0) {
+    return;
+  }
+
+  const directoryPaths = [...new Set(
+    normalizedPaths.flatMap((value) => buildParentPaths(value, '/etc/mosquitto')),
+  )];
+
+  const canUseSetfacl = await binaryExists(config.setfaclBin);
+
+  for (const dirPath of directoryPaths) {
+    if (!(await managedPathExists(dirPath))) {
+      continue;
+    }
+    if (canUseSetfacl) {
+      await runRootBinary(config.setfaclBin, ['-m', 'u:telegraf:rx', dirPath]);
+    } else {
+      await runRootBinary(config.chmodBin, ['o+rx', dirPath]);
+    }
+  }
+
+  for (const filePath of normalizedPaths) {
+    if (!(await managedPathExists(filePath))) {
+      continue;
+    }
+    if (requiresAclForTelegraf(filePath)) {
+      if (!canUseSetfacl) {
+        throw new Error(
+          `setfacl is required to grant telegraf access to private key ${filePath}`,
+        );
+      }
+      await runRootBinary(config.setfaclBin, ['-m', 'u:telegraf:r', filePath]);
+      continue;
+    }
+    if (canUseSetfacl) {
+      await runRootBinary(config.setfaclBin, ['-m', 'u:telegraf:r', filePath]);
+    } else {
+      await runRootBinary(config.chmodBin, ['o+r', filePath]);
+    }
   }
 };
 
@@ -153,6 +398,276 @@ const removeFiles = async (
       packages,
       removedFiles,
       unitStates: await summarizeUnitStates([...new Set(touchedUnits)]),
+    },
+  };
+};
+
+const applyBrokerRuntime = async (
+  payload: z.infer<typeof brokerApplySchema>,
+): Promise<JobResult> => {
+  const serviceName = assertAllowedServiceName(payload.serviceName, 'mqtt');
+  const unit = `${serviceName}.service`;
+
+  await ensureManagedDirectory('/etc/mosquitto', { mode: '0755' });
+  await ensureManagedDirectory(payload.persistenceLocation, {
+    mode: '0755',
+    owner: 'mosquitto',
+    group: 'mosquitto',
+  });
+
+  const appliedFiles = await writeManagedFiles([
+    {
+      path: payload.configPath,
+      content: `${payload.configContents.trimEnd()}\n`,
+      mode: '0644',
+    },
+    {
+      path: payload.unitPath,
+      content: `${payload.unitContents.trimEnd()}\n`,
+      mode: '0644',
+    },
+  ]);
+
+  await syncMosquittoPasswords(
+    payload.passwordFilePath,
+    payload.mqttCredentials ?? [],
+  );
+  await systemctl('daemon-reload');
+  await systemctl('enable', [unit]);
+
+  return {
+    ok: true,
+    summary: `Applied broker runtime ${serviceName}`,
+    details: {
+      brokerId: payload.brokerId,
+      serviceName,
+      appliedFiles,
+      unitStates: await summarizeUnitStatesForService(serviceName),
+    },
+  };
+};
+
+const controlBrokerRuntime = async (
+  payload: z.infer<typeof brokerControlSchema>,
+  action: 'start' | 'restart' | 'stop',
+): Promise<JobResult> => {
+  const serviceName = assertAllowedServiceName(payload.serviceName, 'mqtt');
+  const unit = `${serviceName}.service`;
+  await systemctl(action, [unit]);
+  return {
+    ok: true,
+    summary: `${action} broker runtime ${serviceName}`,
+    details: {
+      brokerId: payload.brokerId,
+      serviceName,
+      unitStates: await summarizeUnitStatesForService(serviceName),
+    },
+  };
+};
+
+const removeBrokerRuntime = async (
+  payload: z.infer<typeof brokerRemoveSchema>,
+): Promise<JobResult> => {
+  const serviceName = assertAllowedServiceName(payload.serviceName, 'mqtt');
+  const unit = `${serviceName}.service`;
+
+  await systemctl('stop', [unit]).catch(() => undefined);
+  await systemctl('disable', [unit]).catch(() => undefined);
+  await removeManagedFiles([
+    payload.configPath,
+    payload.passwordFilePath,
+    payload.aclFilePath,
+    payload.unitPath,
+  ]);
+  await runRootBinary(config.rmBin, ['-rf', payload.persistenceLocation]);
+  await systemctl('daemon-reload');
+
+  return {
+    ok: true,
+    summary: `Removed broker runtime ${serviceName}`,
+    details: {
+      brokerId: payload.brokerId,
+      serviceName,
+      unitStates: await summarizeUnitStatesForService(serviceName),
+    },
+  };
+};
+
+const applyTelegrafRuntime = async (
+  payload: z.infer<typeof telegrafRuntimeApplySchema>,
+): Promise<JobResult> => {
+  const serviceName = assertAllowedServiceName(payload.serviceName, 'telegraf');
+  const unit = `${serviceName}.service`;
+
+  await ensureManagedDirectory('/etc/telegraf', { mode: '0755' });
+  await ensureManagedDirectory('/etc/telegraf/telegraf.d', { mode: '0755' });
+
+  const appliedFiles = await writeManagedFiles([
+    {
+      path: payload.configPath,
+      content: `${payload.configContents.trimEnd()}\n`,
+      mode: '0640',
+    },
+    {
+      path: payload.unitPath,
+      content: `${payload.unitContents.trimEnd()}\n`,
+      mode: '0644',
+    },
+  ]);
+
+  await chownManagedPath(payload.configPath, 'telegraf', 'telegraf');
+  await chmodManagedPath(payload.configPath, '0640');
+  await grantTelegrafTlsAccess(payload.tlsAccessPaths ?? []);
+  await systemctl('daemon-reload');
+  await systemctl('enable', [unit]);
+
+  return {
+    ok: true,
+    summary: `Applied telegraf runtime ${serviceName}`,
+    details: {
+      brokerId: payload.brokerId,
+      serviceName,
+      appliedFiles,
+      unitStates: await summarizeUnitStatesForService(serviceName),
+    },
+  };
+};
+
+const removeTelegrafRuntime = async (
+  payload: z.infer<typeof telegrafRuntimeRemoveSchema>,
+): Promise<JobResult> => {
+  const serviceName = assertAllowedServiceName(payload.serviceName, 'telegraf');
+  const unit = `${serviceName}.service`;
+
+  await systemctl('stop', [unit]).catch(() => undefined);
+  await systemctl('disable', [unit]).catch(() => undefined);
+  await removeManagedFiles([payload.configPath, payload.unitPath]);
+  await systemctl('daemon-reload');
+
+  return {
+    ok: true,
+    summary: `Removed telegraf runtime ${serviceName}`,
+    details: {
+      brokerId: payload.brokerId,
+      serviceName,
+      unitStates: await summarizeUnitStatesForService(serviceName),
+    },
+  };
+};
+
+const loadMqttDiagnostics = async (
+  payload: z.infer<typeof mqttDiagnosticsSchema>,
+): Promise<JobResult> => {
+  const rawConfig = await fs.readFile(payload.configPath, 'utf8');
+  const configData = parsePersistenceConfig(rawConfig);
+  const persistenceEnabled = configData.persistence;
+  const persistenceLocation = configData.persistenceLocation;
+  const databasePath = resolveDbPath(persistenceLocation);
+
+  if (!persistenceEnabled) {
+    return {
+      ok: true,
+      summary: `MQTT diagnostics snapshot for ${payload.serviceName}`,
+      details: {
+        brokerId: payload.brokerId,
+        serviceName: payload.serviceName,
+        persistenceEnabled,
+        persistenceLocation,
+        databasePath,
+        tableName: null,
+        warning: 'Persistence is disabled for this broker instance.',
+        entries: [],
+        columns: [],
+      },
+    };
+  }
+
+  if (!(await managedPathExists(databasePath))) {
+    return {
+      ok: true,
+      summary: `MQTT diagnostics snapshot for ${payload.serviceName}`,
+      details: {
+        brokerId: payload.brokerId,
+        serviceName: payload.serviceName,
+        persistenceEnabled,
+        persistenceLocation,
+        databasePath,
+        tableName: null,
+        warning: 'mqtt.db does not exist yet.',
+        entries: [],
+        columns: [],
+      },
+    };
+  }
+
+  const tableListScript = [
+    'import sqlite3, sys',
+    'conn = sqlite3.connect(sys.argv[1])',
+    'cur = conn.cursor()',
+    'for row in cur.execute("SELECT name FROM sqlite_master WHERE type=\'table\' ORDER BY name"):',
+    '    print(row[0])',
+  ].join('\n');
+  const tableResult = await runRootBinary(config.python3Bin, [
+    '-c',
+    tableListScript,
+    databasePath,
+  ]);
+  const tables = parseTableList(tableResult.stdout);
+  const tableName = tables.length > 0 ? pickMessageTable(tables) : null;
+
+  if (!tableName) {
+    return {
+      ok: true,
+      summary: `MQTT diagnostics snapshot for ${payload.serviceName}`,
+      details: {
+        brokerId: payload.brokerId,
+        serviceName: payload.serviceName,
+        persistenceEnabled,
+        persistenceLocation,
+        databasePath,
+        tableName: null,
+        warning: 'No tables found in mqtt.db yet.',
+        entries: [],
+        columns: [],
+      },
+    };
+  }
+
+  const safeTableName = sanitizeTableName(tableName);
+  const dataScript = [
+    'import json, sqlite3, sys',
+    'conn = sqlite3.connect(sys.argv[1])',
+    'conn.row_factory = sqlite3.Row',
+    'cur = conn.cursor()',
+    `rows = cur.execute("SELECT * FROM ${safeTableName} ORDER BY rowid DESC LIMIT ${payload.maxMessages}").fetchall()`,
+    'print(json.dumps([dict(row) for row in rows]))',
+  ].join('\n');
+  const dataResult = await runRootBinary(config.python3Bin, [
+    '-c',
+    dataScript,
+    databasePath,
+  ]);
+  const parsed = dataResult.stdout.trim()
+    ? (JSON.parse(dataResult.stdout) as Array<Record<string, unknown>>)
+    : [];
+  const entries = Array.isArray(parsed) ? parsed : [];
+  const columns = Array.from(
+    new Set(entries.flatMap((entry) => Object.keys(entry))),
+  );
+
+  return {
+    ok: true,
+    summary: `MQTT diagnostics snapshot for ${payload.serviceName}`,
+    details: {
+      brokerId: payload.brokerId,
+      serviceName: payload.serviceName,
+      persistenceEnabled,
+      persistenceLocation,
+      databasePath,
+      tableName,
+      warning: null,
+      entries,
+      columns,
     },
   };
 };
@@ -234,13 +749,43 @@ export const runJob = async (job: AgentJob): Promise<JobResult> => {
         },
       };
     }
+    case 'mqtt.diagnostics.snapshot':
+      return loadMqttDiagnostics(mqttDiagnosticsSchema.parse(job.payload));
+    case 'broker.apply':
+      return applyBrokerRuntime(brokerApplySchema.parse(job.payload));
+    case 'broker.start':
+      return controlBrokerRuntime(brokerControlSchema.parse(job.payload), 'start');
+    case 'broker.restart':
+      return controlBrokerRuntime(
+        brokerControlSchema.parse(job.payload),
+        'restart',
+      );
+    case 'broker.stop':
+      return controlBrokerRuntime(brokerControlSchema.parse(job.payload), 'stop');
+    case 'broker.remove':
+      return removeBrokerRuntime(brokerRemoveSchema.parse(job.payload));
     case 'broker.config.apply':
       return applyFiles(fileApplySchema.parse(job.payload), ['mosquitto']);
     case 'mosquitto.acl.sync':
       return applyFiles(fileApplySchema.parse(job.payload), ['mosquitto']);
     case 'telegraf.apply':
+      if (job.payload && typeof job.payload === 'object' && 'configPath' in job.payload) {
+        return applyTelegrafRuntime(
+          telegrafRuntimeApplySchema.parse(job.payload),
+        );
+      }
       return applyFiles(fileApplySchema.parse(job.payload), ['telegraf']);
     case 'telegraf.remove':
+      if (
+        job.payload &&
+        typeof job.payload === 'object' &&
+        'configPath' in job.payload &&
+        'unitPath' in job.payload
+      ) {
+        return removeTelegrafRuntime(
+          telegrafRuntimeRemoveSchema.parse(job.payload),
+        );
+      }
       return removeFiles(fileRemoveSchema.parse(job.payload), ['telegraf']);
     default: {
       throw new Error(`Unsupported job type: ${job.type}`);

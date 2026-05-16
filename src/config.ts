@@ -62,6 +62,12 @@ export const CAPABILITIES: CapabilityKey[] = [
   'agent.diagnostics.snapshot',
   'stack.install',
   'stack.remove',
+  'mqtt.diagnostics.snapshot',
+  'broker.apply',
+  'broker.start',
+  'broker.restart',
+  'broker.stop',
+  'broker.remove',
   'broker.config.apply',
   'mosquitto.acl.sync',
   'telegraf.apply',
@@ -113,6 +119,7 @@ export const config = {
     '/etc/mosquitto',
     '/etc/telegraf',
     '/etc/systemd/system',
+    '/var/lib/mosquitto',
   ]),
   allowedUnitPatterns: asList('ALLOWED_UNIT_PATTERNS', [
     '^mosquitto(?:@.+)?\\.service$',
@@ -125,6 +132,12 @@ export const config = {
   journalctlBin: process.env.JOURNALCTL_BIN ?? '/usr/bin/journalctl',
   installBin: process.env.INSTALL_BIN ?? '/usr/bin/install',
   rmBin: process.env.RM_BIN ?? '/usr/bin/rm',
+  chownBin: process.env.CHOWN_BIN ?? '/usr/bin/chown',
+  chmodBin: process.env.CHMOD_BIN ?? '/usr/bin/chmod',
+  python3Bin: process.env.PYTHON3_BIN ?? '/usr/bin/python3',
+  mosquittoPasswdBin:
+    process.env.MOSQUITTO_PASSWD_BIN ?? '/usr/bin/mosquitto_passwd',
+  setfaclBin: process.env.SETFACL_BIN ?? '/usr/bin/setfacl',
   capabilities: CAPABILITIES,
   hostname: os.hostname(),
 };

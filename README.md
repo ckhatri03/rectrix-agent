@@ -28,6 +28,12 @@ This initial version supports:
   - `agent.diagnostics.snapshot`
   - `stack.install`
   - `stack.remove`
+  - `mqtt.diagnostics.snapshot`
+  - `broker.apply`
+  - `broker.start`
+  - `broker.restart`
+  - `broker.stop`
+  - `broker.remove`
   - `broker.config.apply`
   - `mosquitto.acl.sync`
   - `telegraf.apply`
@@ -134,6 +140,17 @@ forced `wss` mode.
 
 ## Job Payloads
 
+### `mqtt.diagnostics.snapshot`
+
+```json
+{
+  "brokerId": 42,
+  "serviceName": "42_demo_mqtt",
+  "configPath": "/etc/mosquitto/42_demo_mqtt.conf",
+  "maxMessages": 20
+}
+```
+
 ### `stack.install`
 
 ```json
@@ -144,6 +161,68 @@ forced `wss` mode.
   },
   "unitsToEnable": ["mosquitto.service", "telegraf.service"],
   "unitsToStart": ["mosquitto.service", "telegraf.service"]
+}
+```
+
+### `broker.apply`
+
+```json
+{
+  "brokerId": 42,
+  "serviceName": "42_demo_mqtt",
+  "configPath": "/etc/mosquitto/42_demo_mqtt.conf",
+  "passwordFilePath": "/etc/mosquitto/passwd/42_demo_mqtt.passwd",
+  "persistenceLocation": "/var/lib/mosquitto/42_demo_mqtt",
+  "unitPath": "/etc/systemd/system/42_demo_mqtt.service",
+  "configContents": "listener 8883\nallow_anonymous true\n",
+  "unitContents": "[Unit]\nDescription=MQTT broker\n",
+  "mqttCredentials": [
+    {
+      "username": "tenant_user",
+      "password": "secret"
+    }
+  ]
+}
+```
+
+### `broker.start`
+
+```json
+{
+  "brokerId": 42,
+  "serviceName": "42_demo_mqtt"
+}
+```
+
+### `broker.restart`
+
+```json
+{
+  "brokerId": 42,
+  "serviceName": "42_demo_mqtt"
+}
+```
+
+### `broker.stop`
+
+```json
+{
+  "brokerId": 42,
+  "serviceName": "42_demo_mqtt"
+}
+```
+
+### `broker.remove`
+
+```json
+{
+  "brokerId": 42,
+  "serviceName": "42_demo_mqtt",
+  "configPath": "/etc/mosquitto/42_demo_mqtt.conf",
+  "passwordFilePath": "/etc/mosquitto/passwd/42_demo_mqtt.passwd",
+  "aclFilePath": "/etc/mosquitto/acl/42_demo_mqtt.acl",
+  "persistenceLocation": "/var/lib/mosquitto/42_demo_mqtt",
+  "unitPath": "/etc/systemd/system/42_demo_mqtt.service"
 }
 ```
 
@@ -183,16 +262,16 @@ forced `wss` mode.
 
 ```json
 {
-  "installPackages": true,
-  "packages": ["telegraf"],
-  "files": [
-    {
-      "path": "/etc/telegraf/telegraf.d/site-a.conf",
-      "content": "[[inputs.mqtt_consumer]]\nservers = [\"ssl://broker.example.com:8883\"]\n",
-      "mode": "0644"
-    }
-  ],
-  "unitsToRestart": ["telegraf.service"]
+  "brokerId": 42,
+  "serviceName": "42_demo_telegraf",
+  "configPath": "/etc/telegraf/42_demo_telegraf.conf",
+  "unitPath": "/etc/systemd/system/42_demo_telegraf.service",
+  "configContents": "[[inputs.mqtt_consumer]]\nservers = [\"ssl://broker.example.com:8883\"]\n",
+  "unitContents": "[Unit]\nDescription=Telegraf runtime\n",
+  "tlsAccessPaths": [
+    "/etc/mosquitto/certs/fullchain.pem",
+    "/etc/mosquitto/certs/privkey.pem"
+  ]
 }
 ```
 
@@ -200,10 +279,10 @@ forced `wss` mode.
 
 ```json
 {
-  "filesToRemove": ["/etc/telegraf/telegraf.d/site-a.conf"],
-  "unitsToStop": ["telegraf.service"],
-  "unitsToDisable": [],
-  "removePackages": false
+  "brokerId": 42,
+  "serviceName": "42_demo_telegraf",
+  "configPath": "/etc/telegraf/42_demo_telegraf.conf",
+  "unitPath": "/etc/systemd/system/42_demo_telegraf.service"
 }
 ```
 

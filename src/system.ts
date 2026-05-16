@@ -33,6 +33,14 @@ const runCommand = async (
   return execFileAsync(file, args, { maxBuffer: 1024 * 1024 * 5 });
 };
 
+export const runRootBinary = async (
+  binary: string,
+  args: string[],
+): Promise<{ stdout: string; stderr: string }> => {
+  const command = asRootCommand(binary, args);
+  return runCommand(command.file, command.args);
+};
+
 const validateUnit = (unit: string) => {
   if (!config.allowedUnitPatterns.some((pattern) => pattern.test(unit))) {
     throw new Error(`Unit is not allowed: ${unit}`);
@@ -100,8 +108,88 @@ export const removeManagedFiles = async (files: string[]): Promise<string[]> => 
   return removedFiles;
 };
 
+export const ensureManagedDirectory = async (
+  dirPath: string,
+  options?: {
+    mode?: string;
+    owner?: string;
+    group?: string;
+  },
+) => {
+  const resolvedPath = validatePath(dirPath);
+  const args = ['-d', '-m', options?.mode ?? '0755'];
+  if (options?.owner) {
+    args.push('-o', options.owner);
+  }
+  if (options?.group) {
+    args.push('-g', options.group);
+  }
+  args.push(resolvedPath);
+  await runRootBinary(config.installBin, args);
+  return resolvedPath;
+};
+
+export const ensureManagedFile = async (
+  filePath: string,
+  options?: {
+    mode?: string;
+    owner?: string;
+    group?: string;
+  },
+) => {
+  const resolvedPath = validatePath(filePath);
+  const args = ['-D', '-m', options?.mode ?? '0644'];
+  if (options?.owner) {
+    args.push('-o', options.owner);
+  }
+  if (options?.group) {
+    args.push('-g', options.group);
+  }
+  args.push('/dev/null', resolvedPath);
+  await runRootBinary(config.installBin, args);
+  return resolvedPath;
+};
+
+export const chmodManagedPath = async (targetPath: string, mode: string) => {
+  const resolvedPath = validatePath(targetPath);
+  await runRootBinary(config.chmodBin, [mode, resolvedPath]);
+  return resolvedPath;
+};
+
+export const chownManagedPath = async (
+  targetPath: string,
+  owner: string,
+  group?: string,
+) => {
+  const resolvedPath = validatePath(targetPath);
+  await runRootBinary(config.chownBin, [
+    group ? `${owner}:${group}` : owner,
+    resolvedPath,
+  ]);
+  return resolvedPath;
+};
+
+export const managedPathExists = async (targetPath: string) => {
+  const resolvedPath = validatePath(targetPath);
+  try {
+    await fs.access(resolvedPath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const binaryExists = async (binaryPath: string) => {
+  try {
+    await fs.access(binaryPath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const systemctl = async (
-  action: 'daemon-reload' | 'enable' | 'disable' | 'restart' | 'reload' | 'stop' | 'is-active',
+  action: 'daemon-reload' | 'enable' | 'disable' | 'start' | 'restart' | 'reload' | 'stop' | 'is-active',
   units: string[] = [],
 ): Promise<string> => {
   for (const unit of units) {
@@ -179,4 +267,3 @@ export const getUnitState = async (unit: string): Promise<string> => {
     return err.stdout?.trim() ?? 'unknown';
   }
 };
-

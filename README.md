@@ -81,6 +81,41 @@ curl -fsSL https://raw.githubusercontent.com/ckhatri03/rectrix-agent/main/script
       bash
 ```
 
+## Uninstall
+
+Customers can remove the public Rectrix agent directly on the remote device.
+
+Standard uninstall:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ckhatri03/rectrix-agent/main/scripts/uninstall.sh | sudo bash
+```
+
+Full uninstall including saved env/state:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ckhatri03/rectrix-agent/main/scripts/uninstall.sh | sudo bash -s -- --purge
+```
+
+The uninstall script:
+
+- stops and disables `rectrix-agent.service`
+- removes `/etc/systemd/system/rectrix-agent.service`
+- removes `/etc/sudoers.d/rectrix-agent`
+- removes the installed app under `/opt/rectrix-agent/app`
+- removes the `rectrix-agent` service user when present
+- preserves `/etc/rectrix-agent` and `/var/lib/rectrix-agent` by default
+- removes `/etc/rectrix-agent` and `/var/lib/rectrix-agent` when run with `--purge`
+
+The uninstall script does not remove:
+
+- Node.js
+- Mosquitto or Telegraf packages
+- agent-managed broker or telegraf workload files outside the Rectrix agent directories
+
+For audited or offline environments, download the script first and inspect it
+locally before running it as root.
+
 ## Runtime Configuration
 
 See [config/agent.example.env](config/agent.example.env).

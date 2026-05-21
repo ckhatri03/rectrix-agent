@@ -3,6 +3,7 @@ export type CapabilityKey =
   | 'stack.install'
   | 'stack.remove'
   | 'mqtt.diagnostics.snapshot'
+  | 'broker.runtime.snapshot'
   | 'broker.apply'
   | 'broker.start'
   | 'broker.restart'
@@ -10,6 +11,7 @@ export type CapabilityKey =
   | 'broker.remove'
   | 'broker.config.apply'
   | 'mosquitto.acl.sync'
+  | 'telegraf.runtime.snapshot'
   | 'telegraf.apply'
   | 'telegraf.remove';
 

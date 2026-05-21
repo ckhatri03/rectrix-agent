@@ -258,6 +258,33 @@ export const readUnitLogs = async (
   return stdout;
 };
 
+export const readUnitStatus = async (
+  unit: string,
+  lines = 50,
+): Promise<string> => {
+  validateUnit(unit);
+  const count = Math.min(Math.max(lines, 1), 500);
+  const command = asRootCommand(config.systemctlBin, [
+    'status',
+    unit,
+    '--no-pager',
+    '--lines',
+    String(count),
+  ]);
+
+  try {
+    const { stdout, stderr } = await runCommand(command.file, command.args);
+    return [stdout, stderr].filter(Boolean).join('\n').trim();
+  } catch (error) {
+    const err = error as Error & { stdout?: string; stderr?: string };
+    const output = [err.stdout, err.stderr].filter(Boolean).join('\n').trim();
+    if (output) {
+      return output;
+    }
+    throw error;
+  }
+};
+
 export const getUnitState = async (unit: string): Promise<string> => {
   validateUnit(unit);
   try {

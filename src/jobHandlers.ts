@@ -12,6 +12,8 @@ import {
   ensureManagedFile,
   getUnitState,
   managedPathExists,
+  readUnitLogs,
+  readUnitStatus,
   removeManagedFiles,
   runRootBinary,
   systemctl,
@@ -84,6 +86,20 @@ const brokerControlSchema = z.object({
   serviceName: z.string().min(1),
 });
 
+const brokerRuntimeSnapshotSchema = z.object({
+  brokerId: z.number().int().positive(),
+  serviceName: z.string().min(1),
+  maxLogLines: z.number().int().positive().max(500).optional().default(20),
+  metrics: z
+    .object({
+      username: z.string().min(1),
+      password: z.string(),
+      mqttsPort: z.number().int().positive(),
+      cafile: z.string().min(1),
+    })
+    .optional(),
+});
+
 const brokerRemoveSchema = z.object({
   brokerId: z.number().int().positive(),
   serviceName: z.string().min(1),
@@ -102,6 +118,12 @@ const telegrafRuntimeApplySchema = z.object({
   configContents: z.string(),
   unitContents: z.string(),
   tlsAccessPaths: z.array(z.string().min(1)).optional().default([]),
+});
+
+const telegrafRuntimeSnapshotSchema = z.object({
+  brokerId: z.number().int().positive(),
+  serviceName: z.string().min(1),
+  maxLogLines: z.number().int().positive().max(500).optional().default(20),
 });
 
 const telegrafRuntimeRemoveSchema = z.object({
@@ -493,6 +515,65 @@ const removeBrokerRuntime = async (
   };
 };
 
+const loadBrokerRuntimeSnapshot = async (
+  payload: z.infer<typeof brokerRuntimeSnapshotSchema>,
+): Promise<JobResult> => {
+  const serviceName = assertAllowedServiceName(payload.serviceName, 'mqtt');
+  const unit = `${serviceName}.service`;
+  const unitState = await getUnitState(unit);
+  const statusOutput = await readUnitStatus(unit, payload.maxLogLines);
+  const journalOutput = await readUnitLogs(unit, payload.maxLogLines);
+
+  let sysMetricsOutput = '';
+  if (payload.metrics) {
+    if (!(await binaryExists(config.mosquittoSubBin))) {
+      throw new Error(
+        'mosquitto_sub is required to read MQTT metrics. Install the mosquitto-clients package on the broker host.',
+      );
+    }
+
+    const metricArgs = [
+      '-v',
+      '-h',
+      '127.0.0.1',
+      '-p',
+      String(payload.metrics.mqttsPort),
+      '--cafile',
+      payload.metrics.cafile,
+      '--insecure',
+      '-u',
+      payload.metrics.username,
+      '-P',
+      payload.metrics.password,
+      '-t',
+      '$SYS/broker/clients/connected',
+      '-t',
+      '$SYS/broker/messages/received',
+      '-t',
+      '$SYS/broker/messages/sent',
+      '-C',
+      '3',
+      '-W',
+      '5',
+    ];
+    const metricResult = await runRootBinary(config.mosquittoSubBin, metricArgs);
+    sysMetricsOutput = metricResult.stdout.trim();
+  }
+
+  return {
+    ok: true,
+    summary: `Broker runtime snapshot for ${serviceName}`,
+    details: {
+      brokerId: payload.brokerId,
+      serviceName,
+      unitState,
+      statusOutput,
+      journalOutput,
+      sysMetricsOutput,
+    },
+  };
+};
+
 const applyTelegrafRuntime = async (
   payload: z.infer<typeof telegrafRuntimeApplySchema>,
 ): Promise<JobResult> => {
@@ -551,6 +632,28 @@ const removeTelegrafRuntime = async (
       brokerId: payload.brokerId,
       serviceName,
       unitStates: await summarizeUnitStatesForService(serviceName),
+    },
+  };
+};
+
+const loadTelegrafRuntimeSnapshot = async (
+  payload: z.infer<typeof telegrafRuntimeSnapshotSchema>,
+): Promise<JobResult> => {
+  const serviceName = assertAllowedServiceName(payload.serviceName, 'telegraf');
+  const unit = `${serviceName}.service`;
+  const unitState = await getUnitState(unit);
+  const statusOutput = await readUnitStatus(unit, payload.maxLogLines);
+  const journalOutput = await readUnitLogs(unit, payload.maxLogLines);
+
+  return {
+    ok: true,
+    summary: `Telegraf runtime snapshot for ${serviceName}`,
+    details: {
+      brokerId: payload.brokerId,
+      serviceName,
+      unitState,
+      statusOutput,
+      journalOutput,
     },
   };
 };
@@ -751,6 +854,10 @@ export const runJob = async (job: AgentJob): Promise<JobResult> => {
     }
     case 'mqtt.diagnostics.snapshot':
       return loadMqttDiagnostics(mqttDiagnosticsSchema.parse(job.payload));
+    case 'broker.runtime.snapshot':
+      return loadBrokerRuntimeSnapshot(
+        brokerRuntimeSnapshotSchema.parse(job.payload),
+      );
     case 'broker.apply':
       return applyBrokerRuntime(brokerApplySchema.parse(job.payload));
     case 'broker.start':
@@ -768,6 +875,10 @@ export const runJob = async (job: AgentJob): Promise<JobResult> => {
       return applyFiles(fileApplySchema.parse(job.payload), ['mosquitto']);
     case 'mosquitto.acl.sync':
       return applyFiles(fileApplySchema.parse(job.payload), ['mosquitto']);
+    case 'telegraf.runtime.snapshot':
+      return loadTelegrafRuntimeSnapshot(
+        telegrafRuntimeSnapshotSchema.parse(job.payload),
+      );
     case 'telegraf.apply':
       if (job.payload && typeof job.payload === 'object' && 'configPath' in job.payload) {
         return applyTelegrafRuntime(

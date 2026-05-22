@@ -90,6 +90,8 @@ export const config = {
   stateFile: process.env.STATE_FILE ?? '/var/lib/rectrix-agent/state.json',
   pollIntervalMs: asNumber('POLL_INTERVAL_MS', 10000),
   heartbeatIntervalMs: asNumber('HEARTBEAT_INTERVAL_MS', 30000),
+  idleJobCooldownAfterMs: asNumber('IDLE_JOB_COOLDOWN_AFTER_MS', 15 * 60 * 1000),
+  idleJobPollIntervalMs: asNumber('IDLE_JOB_POLL_INTERVAL_MS', 60000),
   httpTimeoutMs: asNumber('HTTP_TIMEOUT_MS', 15000),
   controlPlaneMode: asEnum<ControlPlaneMode>(
     'CONTROL_PLANE_MODE',

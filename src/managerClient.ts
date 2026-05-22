@@ -40,8 +40,10 @@ const request = async <T>(
 
   if (!response.ok) {
     const responseText = await response.text();
-    throw new Error(
+    throw new ManagerRequestError(
       `Manager request failed ${response.status} ${response.statusText}: ${responseText}`,
+      response.status,
+      responseText,
     );
   }
 
@@ -51,6 +53,17 @@ const request = async <T>(
 
   return undefined;
 };
+
+export class ManagerRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly responseText: string,
+  ) {
+    super(message);
+    this.name = 'ManagerRequestError';
+  }
+}
 
 const asControlPlaneMode = (value: unknown): ControlPlaneMode | undefined => {
   if (typeof value !== 'string') {

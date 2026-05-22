@@ -37,6 +37,8 @@ export interface AgentState {
   activeControlPlaneAuthMode?: ActiveControlPlaneAuthMode;
   lastSuccessfulWssConnectAt?: string;
   lastFallbackReason?: string;
+  activationDisabledAt?: string;
+  activationDisabledReason?: string;
 }
 
 export interface ManagedFile {

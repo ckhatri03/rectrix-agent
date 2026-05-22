@@ -6,7 +6,7 @@ import { ControlPlaneTransport } from './controlPlane/types';
 import { updateEnvFile } from './envFile';
 import { runJob } from './jobHandlers';
 import { logger } from './logger';
-import { ManagerClient } from './managerClient';
+import { ManagerClient, ManagerRequestError } from './managerClient';
 import { loadState, saveState } from './stateStore';
 import { AgentState, SystemInfo } from './types';
 
@@ -69,6 +69,8 @@ export class AgentService {
       activeControlPlaneAuthMode: persistedState.activeControlPlaneAuthMode,
       lastSuccessfulWssConnectAt: persistedState.lastSuccessfulWssConnectAt,
       lastFallbackReason: persistedState.lastFallbackReason,
+      activationDisabledAt: persistedState.activationDisabledAt,
+      activationDisabledReason: persistedState.activationDisabledReason,
     };
 
     const system = await getSystemInfo();
@@ -136,6 +138,8 @@ export class AgentService {
       AGENT_RUNTIME_TOKEN: this.state.runtimeToken,
       AGENT_BOOTSTRAP_TOKEN: '',
       AGENT_ACTIVATION_CODE: '',
+      ACTIVATION_DISABLED_AT: '',
+      ACTIVATION_DISABLED_REASON: '',
       POLL_INTERVAL_MS: String(
         this.state.pollIntervalMs ?? config.pollIntervalMs,
       ),
@@ -149,6 +153,37 @@ export class AgentService {
     });
   }
 
+  private isTerminalActivationError(error: unknown): error is ManagerRequestError {
+    if (!(error instanceof ManagerRequestError) || error.status !== 409) {
+      return false;
+    }
+
+    return [
+      'Activation code has expired',
+      'Activation code has been revoked',
+      'Activation code has already been used',
+    ].some((message) => error.responseText.includes(message));
+  }
+
+  private async disableActivation(reason: string): Promise<never> {
+    const disabledAt = new Date().toISOString();
+    await this.updateState({
+      activationDisabledAt: disabledAt,
+      activationDisabledReason: reason,
+      bootstrapToken: undefined,
+      runtimeToken: undefined,
+    });
+    await updateEnvFile(config.envFilePath, {
+      AGENT_ACTIVATION_CODE: '',
+      AGENT_BOOTSTRAP_TOKEN: '',
+      ACTIVATION_DISABLED_AT: disabledAt,
+      ACTIVATION_DISABLED_REASON: reason,
+    });
+    throw new Error(
+      `Activation disabled after terminal manager response: ${reason}. Provide a new activation code or restore agent credentials before restarting the agent.`,
+    );
+  }
+
   private async updateState(update: Partial<AgentState>): Promise<void> {
     Object.assign(this.state, update);
     await saveState(config.stateFile, this.state);
@@ -157,9 +192,23 @@ export class AgentService {
   private async bootstrap(system: SystemInfo): Promise<void> {
     const client = new ManagerClient(this.state, system);
 
+    if (this.state.activationDisabledReason) {
+      throw new Error(
+        `Activation disabled at ${this.state.activationDisabledAt ?? 'an unknown time'}: ${this.state.activationDisabledReason}`,
+      );
+    }
+
     if (!this.state.agentId || !(this.state.bootstrapToken || this.state.runtimeToken)) {
       logger.info('no persisted agent credentials found, activating');
-      await this.updateState(await client.activate());
+      try {
+        await this.updateState(await client.activate());
+      } catch (error) {
+        if (this.isTerminalActivationError(error)) {
+          logger.error({ error }, 'activation rejected permanently by manager');
+          await this.disableActivation(error.responseText);
+        }
+        throw error;
+      }
     }
 
     if (this.state.runtimeToken) {
@@ -184,6 +233,19 @@ export class AgentService {
     return this.state.heartbeatIntervalMs ?? config.heartbeatIntervalMs;
   }
 
+  private httpJobPollDelayMs(idleSinceMs: number | null): number {
+    const normalDelayMs = this.state.pollIntervalMs ?? config.pollIntervalMs;
+    if (!idleSinceMs) {
+      return normalDelayMs;
+    }
+
+    if (Date.now() - idleSinceMs < config.idleJobCooldownAfterMs) {
+      return normalDelayMs;
+    }
+
+    return Math.max(normalDelayMs, config.idleJobPollIntervalMs);
+  }
+
   private async heartbeatLoop(transport: ControlPlaneTransport): Promise<void> {
     while (!this.stopped) {
       try {
@@ -197,15 +259,40 @@ export class AgentService {
   }
 
   private async jobLoop(transport: ControlPlaneTransport): Promise<void> {
+    let idleSinceMs: number | null = null;
+    let cooldownActive = false;
+
     while (!this.stopped) {
       try {
         const job = await transport.nextJob();
         if (!job) {
           if (transport.mode === 'http') {
-            await delay(this.state.pollIntervalMs ?? config.pollIntervalMs);
+            idleSinceMs ??= Date.now();
+            const nextCooldownActive =
+              Date.now() - idleSinceMs >= config.idleJobCooldownAfterMs;
+            if (nextCooldownActive && !cooldownActive) {
+              cooldownActive = true;
+              logger.info(
+                {
+                  idleForMinutes: Math.floor((Date.now() - idleSinceMs) / 60000),
+                  pollIntervalMs: this.httpJobPollDelayMs(idleSinceMs),
+                },
+                'no jobs for cooldown window, slowing HTTP job polling',
+              );
+            }
+            await delay(this.httpJobPollDelayMs(idleSinceMs));
           }
           continue;
         }
+
+        if (cooldownActive) {
+          logger.info(
+            { jobId: job.id, restoredPollIntervalMs: this.state.pollIntervalMs ?? config.pollIntervalMs },
+            'job received, restoring normal HTTP job polling',
+          );
+        }
+        idleSinceMs = null;
+        cooldownActive = false;
 
         logger.info({ jobId: job.id, jobType: job.type }, 'running job');
         await transport.sendJobAccepted(job.id);
@@ -226,7 +313,7 @@ export class AgentService {
       } catch (error) {
         logger.error({ error }, 'job poll failed');
         if (transport.mode === 'http') {
-          await delay(this.state.pollIntervalMs ?? config.pollIntervalMs);
+          await delay(this.httpJobPollDelayMs(idleSinceMs));
         } else {
           await delay(config.wssBackoffInitialMs);
         }

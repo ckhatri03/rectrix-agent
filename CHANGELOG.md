@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-22
+
+- Added terminal activation failure handling so expired, revoked, and already-used activation codes stop retrying on the agent side, persist a disabled activation reason, and clear stale activation credentials from the agent env file.
+- Added an idle HTTP job-poll cooldown in `src/agent.ts` and new config knobs in `src/config.ts` so agents slow `/agent/jobs/next` polling after 15 minutes with no jobs while leaving heartbeat cadence unchanged.
+- Verified the updated TypeScript build after the activation guardrail and idle polling changes.
+
 ## 2026-04-16
 
 - Quoted shell-sensitive persisted environment values in `src/envFile.ts` so

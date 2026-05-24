@@ -59,6 +59,12 @@ const asEnum = <T extends string>(
 
 const CONTROL_PLANE_MODES = ['auto', 'http', 'rest', 'wss'] as const satisfies ReadonlyArray<ControlPlaneMode>;
 const CONTROL_PLANE_AUTH_MODES = ['auto', 'token', 'x509'] as const satisfies ReadonlyArray<ControlPlaneAuthMode>;
+const DEFAULT_ALLOWED_CONFIG_ROOTS = [
+  '/etc/mosquitto',
+  '/etc/telegraf',
+  '/etc/systemd/system',
+  '/var/lib/mosquitto',
+] as const;
 
 export const CAPABILITIES: CapabilityKey[] = [
   'agent.diagnostics.snapshot',
@@ -122,12 +128,12 @@ export const config = {
   jobCompletePathTemplate:
     process.env.JOB_COMPLETE_PATH_TEMPLATE ?? '/agent/jobs/:jobId/complete',
   allowPackageOperations: asBoolean('ALLOW_PACKAGE_OPERATIONS', true),
-  allowedConfigRoots: asList('ALLOWED_CONFIG_ROOTS', [
-    '/etc/mosquitto',
-    '/etc/telegraf',
-    '/etc/systemd/system',
-    '/var/lib/mosquitto',
-  ]),
+  allowedConfigRoots: [
+    ...new Set([
+      ...DEFAULT_ALLOWED_CONFIG_ROOTS,
+      ...asList('ALLOWED_CONFIG_ROOTS', [...DEFAULT_ALLOWED_CONFIG_ROOTS]),
+    ]),
+  ],
   allowedUnitPatterns: asList('ALLOWED_UNIT_PATTERNS', [
     '^mosquitto(?:@.+)?\\.service$',
     '^telegraf(?:@.+)?\\.service$',

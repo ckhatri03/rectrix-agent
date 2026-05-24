@@ -306,7 +306,11 @@ export class AgentService {
           logger.info({ jobId: job.id, jobType: job.type }, 'job completed');
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          await transport.sendJobEvent(job.id, 'error', message);
+          await transport.sendJobEvent(job.id, 'error', message, {
+            errorName: error instanceof Error ? error.name : typeof error,
+            stack: error instanceof Error ? error.stack : undefined,
+            jobType: job.type,
+          });
           await transport.completeJob(job.id, 'failed', undefined, message);
           logger.error({ err: error, jobId: job.id, jobType: job.type }, 'job failed');
         }

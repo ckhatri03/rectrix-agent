@@ -25,7 +25,7 @@ class TailFileStream extends Writable {
     callback: (error?: Error | null) => void,
   ): void {
     try {
-      const text = Buffer.isBuffer(chunk) ? chunk.toString(encoding) : chunk;
+      const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : chunk;
       process.stdout.write(text);
       this.appendChunk(text);
       callback();

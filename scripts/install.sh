@@ -235,6 +235,7 @@ else
 fi
 
 for key in \
+  AGENT_VERSION \
   LOG_LEVEL \
   MANAGER_API_URL \
   WSS_URL \

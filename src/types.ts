@@ -1,5 +1,6 @@
 export type CapabilityKey =
   | 'agent.diagnostics.snapshot'
+  | 'agent.update'
   | 'stack.install'
   | 'stack.remove'
   | 'mqtt.diagnostics.snapshot'

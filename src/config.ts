@@ -1,6 +1,7 @@
 import os from 'node:os';
 import dotenv from 'dotenv';
 import { CapabilityKey, ControlPlaneAuthMode, ControlPlaneMode } from './types';
+import packageJson from '../package.json';
 
 dotenv.config();
 
@@ -60,6 +61,7 @@ const CONTROL_PLANE_AUTH_MODES = ['auto', 'token', 'x509'] as const satisfies Re
 
 export const CAPABILITIES: CapabilityKey[] = [
   'agent.diagnostics.snapshot',
+  'agent.update',
   'stack.install',
   'stack.remove',
   'mqtt.diagnostics.snapshot',
@@ -79,7 +81,7 @@ export const CAPABILITIES: CapabilityKey[] = [
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'production',
   logLevel: process.env.LOG_LEVEL ?? 'info',
-  agentVersion: process.env.AGENT_VERSION ?? '0.1.0',
+  agentVersion: process.env.AGENT_VERSION ?? packageJson.version,
   managerApiUrl: asString(process.env.MANAGER_API_URL),
   wssUrl: asString(process.env.WSS_URL),
   activationCode: asString(process.env.AGENT_ACTIVATION_CODE)?.toUpperCase(),
@@ -129,6 +131,8 @@ export const config = {
     '^mosquitto(?:@.+)?\\.service$',
     '^telegraf(?:@.+)?\\.service$',
     '^telegraf-.+\\.service$',
+    '^[a-z0-9_]+_mqtt\\.service$',
+    '^[a-z0-9_]+_telegraf\\.service$',
   ]).map((value) => new RegExp(value)),
   sudoBin: process.env.SUDO_BIN ?? '/usr/bin/sudo',
   aptGetBin: process.env.APT_GET_BIN ?? '/usr/bin/apt-get',

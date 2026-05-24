@@ -1,7 +1,10 @@
+import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import os from 'node:os';
 import { z } from 'zod';
 import { config } from './config';
+import { updateEnvFile } from './envFile';
 import {
   aptInstall,
   aptRemove,
@@ -19,6 +22,7 @@ import {
   systemctl,
   writeManagedFiles,
 } from './system';
+import { loadState } from './stateStore';
 import { AgentJob, JobResult, ManagedFile } from './types';
 
 const fileSchema = z.object({
@@ -35,6 +39,12 @@ const diagnosticsSchema = z.object({
   expectedTransportMode: z
     .enum(['auto', 'http', 'rest', 'wss'])
     .optional(),
+});
+
+const agentUpdateSchema = z.object({
+  archiveUrl: z.string().url(),
+  version: z.string().trim().min(1),
+  serviceName: z.string().trim().min(1).default('rectrix-agent.service'),
 });
 
 const fileApplySchema = z.object({
@@ -176,6 +186,103 @@ const assertAllowedServiceName = (
     throw new Error(`Service name ${serviceName} is not allowed.`);
   }
   return serviceName;
+};
+
+const shellEscape = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+
+const resolveAgentAuthToken = async () => {
+  const persisted: Partial<{ runtimeToken: string; bootstrapToken: string }> =
+    await loadState(config.stateFile).catch(() => ({}));
+  return (
+    config.runtimeToken
+    ?? persisted.runtimeToken
+    ?? config.bootstrapToken
+    ?? persisted.bootstrapToken
+    ?? null
+  );
+};
+
+const queueAgentSelfUpdate = async (
+  payload: z.infer<typeof agentUpdateSchema>,
+): Promise<JobResult> => {
+  const authToken = await resolveAgentAuthToken();
+  if (!authToken) {
+    throw new Error('Agent update requires a persisted runtime or bootstrap token.');
+  }
+
+  const appDir = path.resolve(__dirname, '..');
+  const installRoot = path.dirname(appDir);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rectrix-agent-update-'));
+  const logPath = path.join(tempDir, 'update.log');
+  const stageRoot = path.join(tempDir, 'stage');
+  const nextAppDir = path.join(installRoot, `app.next.${Date.now()}`);
+  const backupAppDir = path.join(installRoot, `app.previous.${Date.now()}`);
+
+  await fs.mkdir(stageRoot, { recursive: true });
+
+  const script = [
+    'set -eu',
+    `TEMP_DIR=${shellEscape(tempDir)}`,
+    `ARCHIVE_URL=${shellEscape(payload.archiveUrl)}`,
+    `AUTH_TOKEN=${shellEscape(authToken)}`,
+    `APP_DIR=${shellEscape(appDir)}`,
+    `NEXT_APP_DIR=${shellEscape(nextAppDir)}`,
+    `BACKUP_APP_DIR=${shellEscape(backupAppDir)}`,
+    `STAGE_ROOT=${shellEscape(stageRoot)}`,
+    `ENV_FILE=${shellEscape(config.envFilePath)}`,
+    `TARGET_VERSION=${shellEscape(payload.version)}`,
+    `SERVICE_NAME=${shellEscape(payload.serviceName)}`,
+    `LOG_PATH=${shellEscape(logPath)}`,
+    '{',
+    '  ARCHIVE_PATH="$TEMP_DIR/rectrix-agent.tar.gz"',
+    '  mkdir -p "$STAGE_ROOT"',
+    '  curl -fsSL -H "Authorization: Bearer $AUTH_TOKEN" "$ARCHIVE_URL" -o "$ARCHIVE_PATH"',
+    '  tar -xzf "$ARCHIVE_PATH" -C "$STAGE_ROOT"',
+    '  SRC_DIR="$(find "$STAGE_ROOT" -mindepth 1 -maxdepth 1 -type d | head -n 1)"',
+    '  if [ -z "$SRC_DIR" ]; then',
+    '    echo "update archive did not contain a source directory" >&2',
+    '    exit 1',
+    '  fi',
+    '  rm -rf "$NEXT_APP_DIR"',
+    '  mkdir -p "$NEXT_APP_DIR"',
+    '  cp -R "$SRC_DIR/." "$NEXT_APP_DIR/"',
+    '  cd "$NEXT_APP_DIR"',
+    '  npm ci',
+    '  npm run build',
+    '  if [ -f "$ENV_FILE" ] || [ -w "$(dirname "$ENV_FILE")" ]; then',
+    '    if grep -q "^AGENT_VERSION=" "$ENV_FILE" 2>/dev/null; then',
+    '      sed -i "s|^AGENT_VERSION=.*$|AGENT_VERSION=$TARGET_VERSION|" "$ENV_FILE"',
+    '    else',
+    '      printf "AGENT_VERSION=%s\\n" "$TARGET_VERSION" >> "$ENV_FILE"',
+    '    fi',
+    '  fi',
+    '  rm -rf "$BACKUP_APP_DIR"',
+    '  mv "$APP_DIR" "$BACKUP_APP_DIR"',
+    '  mv "$NEXT_APP_DIR" "$APP_DIR"',
+    '  sudo systemctl restart "$SERVICE_NAME"',
+    '} >> "$LOG_PATH" 2>&1',
+  ].join('\n');
+
+  const child = spawn('/bin/sh', ['-c', script], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+
+  await updateEnvFile(config.envFilePath, { AGENT_VERSION: payload.version }).catch(
+    () => undefined,
+  );
+
+  return {
+    ok: true,
+    summary: `Queued agent self-update to ${payload.version}`,
+    details: {
+      version: payload.version,
+      archiveUrl: payload.archiveUrl,
+      serviceName: payload.serviceName,
+      logPath,
+    },
+  };
 };
 
 const requiresAclForTelegraf = (filePath: string) =>
@@ -803,6 +910,8 @@ export const runJob = async (job: AgentJob): Promise<JobResult> => {
         },
       };
     }
+    case 'agent.update':
+      return queueAgentSelfUpdate(agentUpdateSchema.parse(job.payload));
     case 'stack.install': {
       const payload = stackSchema.parse(job.payload);
       const packages = await aptInstall(

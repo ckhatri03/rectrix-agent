@@ -3,6 +3,8 @@
 `rectrix-agent` is the public edge deployment agent for Rectrix-managed remote
 Ubuntu VMs.
 
+Versioning for this repository is defined in [VERSIONING.md](./VERSIONING.md).
+
 The agent is designed for the deployment model where:
 
 - the private Rectrix app remains the control plane

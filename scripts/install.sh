@@ -50,6 +50,7 @@ APP_DIR="${INSTALL_ROOT}/app"
 STATE_DIR="${STATE_DIR:-/var/lib/rectrix-agent}"
 ENV_DIR="${ENV_DIR:-/etc/rectrix-agent}"
 ENV_FILE="${ENV_FILE:-${ENV_DIR}/agent.env}"
+LOG_FILE="${LOG_FILE:-/var/log/rectrix-agent.log}"
 SYSTEMD_UNIT_DEST="${SYSTEMD_UNIT_DEST:-/etc/systemd/system/rectrix-agent.service}"
 SUDOERS_FILE="${SUDOERS_FILE:-/etc/sudoers.d/rectrix-agent}"
 ARCHIVE_URL="${ARCHIVE_URL:-https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/${REPO_REF}}"
@@ -232,6 +233,13 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 else
   chown root:"${SERVICE_USER}" "${ENV_FILE}" || true
   chmod 0660 "${ENV_FILE}" || true
+fi
+
+if [[ ! -f "${LOG_FILE}" ]]; then
+  install -m 0640 -o "${SERVICE_USER}" -g "${SERVICE_USER}" /dev/null "${LOG_FILE}"
+else
+  chown "${SERVICE_USER}:${SERVICE_USER}" "${LOG_FILE}" || true
+  chmod 0640 "${LOG_FILE}" || true
 fi
 
 for key in \

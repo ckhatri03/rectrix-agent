@@ -1,9 +1,10 @@
 import os from 'node:os';
 import dotenv from 'dotenv';
+import { DEFAULT_STATE_FILE_PATH, resolveAgentEnvFilePath } from './envPaths';
 import { CapabilityKey, ControlPlaneAuthMode, ControlPlaneMode } from './types';
 import packageJson from '../package.json';
 
-dotenv.config();
+dotenv.config({ path: resolveAgentEnvFilePath() });
 
 const asString = (value: string | undefined) =>
   value && value.trim() ? value.trim() : undefined;
@@ -88,8 +89,8 @@ export const config = {
   agentId: asString(process.env.AGENT_ID),
   bootstrapToken: asString(process.env.AGENT_BOOTSTRAP_TOKEN),
   runtimeToken: asString(process.env.AGENT_RUNTIME_TOKEN),
-  envFilePath: process.env.AGENT_ENV_FILE_PATH ?? '/etc/rectrix-agent/agent.env',
-  stateFile: process.env.STATE_FILE ?? '/var/lib/rectrix-agent/state.json',
+  envFilePath: resolveAgentEnvFilePath(),
+  stateFile: process.env.STATE_FILE ?? DEFAULT_STATE_FILE_PATH,
   pollIntervalMs: asNumber('POLL_INTERVAL_MS', 10000),
   heartbeatIntervalMs: asNumber('HEARTBEAT_INTERVAL_MS', 30000),
   idleJobCooldownAfterMs: asNumber('IDLE_JOB_COOLDOWN_AFTER_MS', 15 * 60 * 1000),

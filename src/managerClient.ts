@@ -233,7 +233,7 @@ export class ManagerClient {
         }),
       });
     } catch (error) {
-      logger.warn({ error, jobId }, 'failed to send job event');
+      logger.warn({ err: error, jobId }, 'failed to send job event');
     }
   }
 

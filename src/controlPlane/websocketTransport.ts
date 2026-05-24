@@ -223,7 +223,7 @@ export class WebSocketControlPlaneTransport implements ControlPlaneTransport {
               this.context.authToken,
             ),
           ).catch((error) => {
-            logger.error({ error }, 'failed to send websocket hello');
+            logger.error({ err: error }, 'failed to send websocket hello');
           });
           resolve();
         });
@@ -240,7 +240,7 @@ export class WebSocketControlPlaneTransport implements ControlPlaneTransport {
           });
           return;
         }
-        logger.warn({ error }, 'websocket transport emitted an error event');
+        logger.warn({ err: error }, 'websocket transport emitted an error event');
       });
 
       socket.on('close', (code: number, reason: Buffer) => {
@@ -271,7 +271,7 @@ export class WebSocketControlPlaneTransport implements ControlPlaneTransport {
     try {
       message = parseInboundControlPlaneMessage(text);
     } catch (error) {
-      logger.warn({ error }, 'failed to parse websocket control-plane message');
+      logger.warn({ err: error }, 'failed to parse websocket control-plane message');
       return;
     }
 
@@ -342,7 +342,7 @@ export class WebSocketControlPlaneTransport implements ControlPlaneTransport {
         logger.info('websocket transport reconnected');
         return;
       } catch (error) {
-        logger.warn({ error, attempt }, 'websocket reconnect attempt failed');
+        logger.warn({ err: error, attempt }, 'websocket reconnect attempt failed');
       }
     }
   }

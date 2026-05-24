@@ -34,6 +34,9 @@ const loadPersistedStateSummary = async (stateFilePath: string) => {
       hasManagerApiUrl: hasValue(
         typeof parsed.managerApiUrl === 'string' ? parsed.managerApiUrl : undefined,
       ),
+      hasWssUrl: hasValue(
+        typeof parsed.wssUrl === 'string' ? parsed.wssUrl : undefined,
+      ),
     };
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
@@ -44,6 +47,7 @@ const loadPersistedStateSummary = async (stateFilePath: string) => {
         hasRuntimeToken: false,
         hasBootstrapToken: false,
         hasManagerApiUrl: false,
+        hasWssUrl: false,
       };
     }
     throw new StartupConfigurationError('Failed to read persisted agent state', {
@@ -77,14 +81,7 @@ export const validateStartupEnvironment = async (): Promise<void> => {
   const persistedState = await loadPersistedStateSummary(stateFilePath);
 
   const managerApiUrl = process.env.MANAGER_API_URL ?? parsedEnv.MANAGER_API_URL;
-  if (!hasValue(managerApiUrl) && !persistedState.hasManagerApiUrl) {
-    throw new StartupConfigurationError('MANAGER_API_URL is missing', {
-      envFilePath,
-      stateFilePath,
-      remediation:
-        'Set MANAGER_API_URL in agent.env or restore a persisted state file with the manager URL.',
-    });
-  }
+  const wssUrl = process.env.WSS_URL ?? parsedEnv.WSS_URL;
 
   const activationCode = process.env.AGENT_ACTIVATION_CODE ?? parsedEnv.AGENT_ACTIVATION_CODE;
   if (hasValue(activationCode) && !/^[A-Z0-9]{24}$/.test(activationCode!.trim().toUpperCase())) {
@@ -104,6 +101,11 @@ export const validateStartupEnvironment = async (): Promise<void> => {
   const hasPersistedCredentials =
     persistedState.hasAgentId
     && (persistedState.hasRuntimeToken || persistedState.hasBootstrapToken);
+  const hasPersistedRuntimeCredentials =
+    persistedState.hasAgentId && persistedState.hasRuntimeToken;
+  const hasRuntimePath = hasRuntimeCredentials || hasPersistedRuntimeCredentials;
+  const hasManagerApiUrl = hasValue(managerApiUrl) || persistedState.hasManagerApiUrl;
+  const hasWssUrl = hasValue(wssUrl) || persistedState.hasWssUrl;
 
   if (
     !hasRuntimeCredentials
@@ -116,6 +118,24 @@ export const validateStartupEnvironment = async (): Promise<void> => {
       stateFilePath,
       remediation:
         'Provide AGENT_ACTIVATION_CODE, AGENT_BOOTSTRAP_TOKEN, or AGENT_ID with AGENT_RUNTIME_TOKEN, or restore the persisted state file.',
+    });
+  }
+
+  if (!hasManagerApiUrl && !hasRuntimePath) {
+    throw new StartupConfigurationError('MANAGER_API_URL is missing', {
+      envFilePath,
+      stateFilePath,
+      remediation:
+        'Set MANAGER_API_URL in agent.env or restore a persisted state file with the manager URL.',
+    });
+  }
+
+  if (hasRuntimePath && !hasManagerApiUrl && !hasWssUrl) {
+    throw new StartupConfigurationError('No control-plane endpoint is configured for the persisted/runtime agent credentials', {
+      envFilePath,
+      stateFilePath,
+      remediation:
+        'Set MANAGER_API_URL for HTTP mode or WSS_URL for websocket mode, or restore persisted state with one of those endpoints.',
     });
   }
 };
@@ -133,5 +153,14 @@ export const buildStartupErrorContext = (error: unknown) => {
     errorCode: err?.code,
     errorMessage: err?.message ?? String(error),
     errorStack: err?.stack,
+    errorDetails:
+      error instanceof StartupConfigurationError
+        ? error.details
+        : error && typeof error === 'object' && 'responseText' in error
+          ? {
+              status: 'status' in error ? error.status : undefined,
+              responseText: error.responseText,
+            }
+          : undefined,
   };
 };

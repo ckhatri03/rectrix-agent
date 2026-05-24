@@ -9,6 +9,6 @@ const main = async () => {
 };
 
 main().catch((error) => {
-  logger.error({ error, startup: buildStartupErrorContext(error) }, 'agent crashed');
+  logger.error({ err: error, startup: buildStartupErrorContext(error) }, 'agent crashed');
   process.exitCode = 1;
 });

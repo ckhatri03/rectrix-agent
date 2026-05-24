@@ -204,7 +204,7 @@ export class AgentService {
         await this.updateState(await client.activate());
       } catch (error) {
         if (this.isTerminalActivationError(error)) {
-          logger.error({ error }, 'activation rejected permanently by manager');
+          logger.error({ err: error }, 'activation rejected permanently by manager');
           await this.disableActivation(error.responseText);
         }
         throw error;
@@ -252,7 +252,7 @@ export class AgentService {
         await transport.sendHeartbeat();
         logger.debug('heartbeat sent');
       } catch (error) {
-        logger.error({ error }, 'heartbeat failed');
+        logger.error({ err: error }, 'heartbeat failed');
       }
       await delay(this.heartbeatDelayMs(transport));
     }
@@ -308,10 +308,10 @@ export class AgentService {
           const message = error instanceof Error ? error.message : String(error);
           await transport.sendJobEvent(job.id, 'error', message);
           await transport.completeJob(job.id, 'failed', undefined, message);
-          logger.error({ error, jobId: job.id, jobType: job.type }, 'job failed');
+          logger.error({ err: error, jobId: job.id, jobType: job.type }, 'job failed');
         }
       } catch (error) {
-        logger.error({ error }, 'job poll failed');
+        logger.error({ err: error }, 'job poll failed');
         if (transport.mode === 'http') {
           await delay(this.httpJobPollDelayMs(idleSinceMs));
         } else {

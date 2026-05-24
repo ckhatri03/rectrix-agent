@@ -388,6 +388,17 @@ const summarizeUnitStatesForService = async (serviceName: string) => {
   };
 };
 
+const ensureRuntimePackage = async (
+  binaryPath: string,
+  packageName: 'mosquitto' | 'telegraf',
+) => {
+  if (await binaryExists(binaryPath)) {
+    return false;
+  }
+  await aptInstall([packageName]);
+  return true;
+};
+
 const syncMosquittoPasswords = async (
   passwordFilePath: string,
   credentials: Array<{ username: string; password: string }>,
@@ -540,6 +551,11 @@ const applyBrokerRuntime = async (
 ): Promise<JobResult> => {
   const serviceName = assertAllowedServiceName(payload.serviceName, 'mqtt');
   const unit = `${serviceName}.service`;
+  const installedPackages: string[] = [];
+
+  if (await ensureRuntimePackage(config.mosquittoPasswdBin, 'mosquitto')) {
+    installedPackages.push('mosquitto');
+  }
 
   await ensureManagedDirectory('/etc/mosquitto', { mode: '0755' });
   await ensureManagedDirectory(payload.persistenceLocation, {
@@ -574,6 +590,7 @@ const applyBrokerRuntime = async (
     details: {
       brokerId: payload.brokerId,
       serviceName,
+      installedPackages,
       appliedFiles,
       unitStates: await summarizeUnitStatesForService(serviceName),
     },
@@ -690,6 +707,11 @@ const applyTelegrafRuntime = async (
 ): Promise<JobResult> => {
   const serviceName = assertAllowedServiceName(payload.serviceName, 'telegraf');
   const unit = `${serviceName}.service`;
+  const installedPackages: string[] = [];
+
+  if (await ensureRuntimePackage('/usr/bin/telegraf', 'telegraf')) {
+    installedPackages.push('telegraf');
+  }
 
   await ensureManagedDirectory('/etc/telegraf', { mode: '0755' });
   await ensureManagedDirectory('/etc/telegraf/telegraf.d', { mode: '0755' });
@@ -719,6 +741,7 @@ const applyTelegrafRuntime = async (
     details: {
       brokerId: payload.brokerId,
       serviceName,
+      installedPackages,
       appliedFiles,
       unitStates: await summarizeUnitStatesForService(serviceName),
     },

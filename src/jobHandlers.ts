@@ -583,6 +583,7 @@ const applyBrokerRuntime = async (
   );
   await systemctl('daemon-reload');
   await systemctl('enable', [unit]);
+  await systemctl('restart', [unit]);
 
   return {
     ok: true,
@@ -734,6 +735,7 @@ const applyTelegrafRuntime = async (
   await grantTelegrafTlsAccess(payload.tlsAccessPaths ?? []);
   await systemctl('daemon-reload');
   await systemctl('enable', [unit]);
+  await systemctl('restart', [unit]);
 
   return {
     ok: true,

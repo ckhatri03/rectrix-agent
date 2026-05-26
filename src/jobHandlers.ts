@@ -79,6 +79,15 @@ const brokerCredentialSchema = z.object({
   password: z.string(),
 });
 
+const brokerTlsBootstrapSchema = z.object({
+  cafile: z.string().min(1),
+  certfile: z.string().min(1),
+  keyfile: z.string().min(1),
+  requireCertificate: z.boolean(),
+  installPublicCaBundle: z.boolean().optional().default(false),
+  certbotLiveDir: z.string().min(1).optional(),
+});
+
 const brokerApplySchema = z.object({
   brokerId: z.number().int().positive(),
   serviceName: z.string().min(1),
@@ -89,6 +98,7 @@ const brokerApplySchema = z.object({
   configContents: z.string(),
   unitContents: z.string(),
   mqttCredentials: z.array(brokerCredentialSchema).default([]),
+  tlsBootstrap: brokerTlsBootstrapSchema.optional(),
 });
 
 const brokerControlSchema = z.object({
@@ -189,6 +199,12 @@ const assertAllowedServiceName = (
 };
 
 const shellEscape = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+
+const systemCaBundleCandidates = [
+  '/etc/ssl/certs/ca-certificates.crt',
+  '/etc/pki/tls/certs/ca-bundle.crt',
+  '/etc/ssl/cert.pem',
+] as const;
 
 const resolveAgentAuthToken = async () => {
   const persisted: Partial<{ runtimeToken: string; bootstrapToken: string }> =
@@ -422,6 +438,107 @@ const syncMosquittoPasswords = async (
   await chmodManagedPath(passwordFilePath, '0640');
 };
 
+const installTlsArtifact = async (
+  sourcePath: string,
+  targetPath: string,
+  mode: '0640' | '0644' = '0640',
+) => {
+  try {
+    await fs.access(sourcePath);
+  } catch {
+    throw new Error(`TLS source file ${sourcePath} does not exist on the host.`);
+  }
+
+  await ensureManagedDirectory(path.dirname(targetPath), {
+    mode: '0750',
+    owner: 'root',
+    group: 'mosquitto',
+  });
+  await runRootBinary(config.installBin, [
+    '-D',
+    '-o',
+    'root',
+    '-g',
+    'mosquitto',
+    '-m',
+    mode,
+    sourcePath,
+    targetPath,
+  ]);
+};
+
+const installPublicCaBundle = async (cafile: string) => {
+  for (const candidate of systemCaBundleCandidates) {
+    if (await binaryExists(candidate)) {
+      await installTlsArtifact(candidate, cafile, '0640');
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `Unable to locate a system CA bundle. Checked: ${systemCaBundleCandidates.join(', ')}`,
+  );
+};
+
+const prepareBrokerTlsFiles = async (
+  payload: z.infer<typeof brokerApplySchema>,
+) => {
+  const tls = payload.tlsBootstrap;
+  if (!tls) {
+    return [] as string[];
+  }
+
+  await ensureManagedDirectory(path.dirname(tls.cafile), {
+    mode: '0750',
+    owner: 'root',
+    group: 'mosquitto',
+  });
+  await ensureManagedDirectory(path.dirname(tls.certfile), {
+    mode: '0750',
+    owner: 'root',
+    group: 'mosquitto',
+  });
+  await ensureManagedDirectory(path.dirname(tls.keyfile), {
+    mode: '0750',
+    owner: 'root',
+    group: 'mosquitto',
+  });
+
+  const prepared: string[] = [];
+
+  if (tls.installPublicCaBundle) {
+    prepared.push(await installPublicCaBundle(tls.cafile));
+  } else if (await managedPathExists(tls.cafile)) {
+    await chownManagedPath(tls.cafile, 'root', 'mosquitto');
+    await chmodManagedPath(tls.cafile, '0640');
+  } else {
+    throw new Error(`Configured CA bundle ${tls.cafile} does not exist on the host.`);
+  }
+
+  if (tls.certbotLiveDir) {
+    const fullchainPath = path.join(tls.certbotLiveDir, 'fullchain.pem');
+    const privkeyPath = path.join(tls.certbotLiveDir, 'privkey.pem');
+    await installTlsArtifact(fullchainPath, tls.certfile, '0640');
+    await installTlsArtifact(privkeyPath, tls.keyfile, '0640');
+    prepared.push(fullchainPath, privkeyPath);
+    return prepared;
+  }
+
+  if (!(await managedPathExists(tls.certfile))) {
+    throw new Error(`Configured certificate file ${tls.certfile} does not exist on the host.`);
+  }
+  if (!(await managedPathExists(tls.keyfile))) {
+    throw new Error(`Configured private key file ${tls.keyfile} does not exist on the host.`);
+  }
+
+  await chownManagedPath(tls.certfile, 'root', 'mosquitto');
+  await chmodManagedPath(tls.certfile, '0640');
+  await chownManagedPath(tls.keyfile, 'root', 'mosquitto');
+  await chmodManagedPath(tls.keyfile, '0640');
+  prepared.push(tls.certfile, tls.keyfile);
+  return prepared;
+};
+
 const grantTelegrafTlsAccess = async (paths: string[]) => {
   const normalizedPaths = [...new Set(
     paths
@@ -576,6 +693,7 @@ const applyBrokerRuntime = async (
       mode: '0644',
     },
   ]);
+  const preparedTlsFiles = await prepareBrokerTlsFiles(payload);
 
   await syncMosquittoPasswords(
     payload.passwordFilePath,
@@ -593,6 +711,7 @@ const applyBrokerRuntime = async (
       serviceName,
       installedPackages,
       appliedFiles,
+      preparedTlsFiles,
       unitStates: await summarizeUnitStatesForService(serviceName),
     },
   };

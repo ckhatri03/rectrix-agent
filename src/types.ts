@@ -12,6 +12,7 @@ export type CapabilityKey =
   | 'broker.remove'
   | 'broker.config.apply'
   | 'mosquitto.acl.sync'
+  | 'letsencrypt.dns01.deploy'
   | 'telegraf.runtime.snapshot'
   | 'telegraf.apply'
   | 'telegraf.remove';

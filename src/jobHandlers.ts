@@ -130,6 +130,18 @@ const brokerRemoveSchema = z.object({
   unitPath: z.string().min(1),
 });
 
+const letsEncryptDnsDeploySchema = z.object({
+  planId: z.number().int().positive(),
+  certificateHostname: z.string().trim().min(1),
+  contactEmail: z.string().trim().email(),
+  environment: z.enum(['staging', 'production']),
+  renewalStrategy: z.enum(['copy-and-reload', 'symlink-and-reload']),
+  dnsProvider: z.string().trim().min(1),
+  dnsCredentialsSecretRef: z.string().trim().min(1).optional(),
+  renewDryRun: z.boolean().optional().default(true),
+  brokerServices: z.array(z.string().min(1)).default([]),
+});
+
 const telegrafRuntimeApplySchema = z.object({
   brokerId: z.number().int().positive(),
   serviceName: z.string().min(1),
@@ -537,6 +549,392 @@ const prepareBrokerTlsFiles = async (
   await chmodManagedPath(tls.keyfile, '0640');
   prepared.push(tls.certfile, tls.keyfile);
   return prepared;
+};
+
+type RootShellResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+};
+
+type LetsEncryptDeployStepResult = {
+  step: string;
+  command: string;
+  ok: boolean;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+};
+
+type LetsEncryptCertificateInspection = {
+  certificateStatus: 'not-installed' | 'installed' | 'expiring-soon' | 'expired' | 'unknown';
+  certificateSummary: string;
+  certificateExpiresAt: string | null;
+  certificateDaysRemaining: number | null;
+  certificateStatusCheckedAt: string | null;
+};
+
+const truncateOutput = (value: string, max = 2000) =>
+  value.length > max
+    ? `${value.slice(0, max)}… [truncated ${value.length - max} chars]`
+    : value;
+
+const summarizeShellFailure = (result: RootShellResult) => {
+  const detail = result.stderr.trim() || result.stdout.trim();
+  if (!detail) {
+    return `exit code ${result.exitCode ?? 'unknown'}`;
+  }
+  return detail;
+};
+
+const parseCertificateExpiry = (value: string): string | null => {
+  const trimmedValue = value.trim();
+  if (!trimmedValue) {
+    return null;
+  }
+
+  const parsedTime = Date.parse(trimmedValue);
+  if (Number.isNaN(parsedTime)) {
+    return null;
+  }
+
+  return new Date(parsedTime).toISOString();
+};
+
+const buildCertificateInspection = (
+  expiresAt: string | null,
+  checkedAt = new Date().toISOString(),
+): LetsEncryptCertificateInspection => {
+  if (!expiresAt) {
+    return {
+      certificateStatus: 'not-installed',
+      certificateSummary: 'Certificate not installed.',
+      certificateExpiresAt: null,
+      certificateDaysRemaining: null,
+      certificateStatusCheckedAt: checkedAt,
+    };
+  }
+
+  const expiryTime = new Date(expiresAt).getTime();
+  const daysRemaining = Math.floor(
+    (expiryTime - Date.now()) / (1000 * 60 * 60 * 24),
+  );
+
+  if (daysRemaining < 0) {
+    return {
+      certificateStatus: 'expired',
+      certificateSummary: `Certificate expired ${Math.abs(daysRemaining)}d ago.`,
+      certificateExpiresAt: expiresAt,
+      certificateDaysRemaining: daysRemaining,
+      certificateStatusCheckedAt: checkedAt,
+    };
+  }
+
+  if (daysRemaining <= 30) {
+    return {
+      certificateStatus: 'expiring-soon',
+      certificateSummary: `Certificate installed, expires in ${daysRemaining}d.`,
+      certificateExpiresAt: expiresAt,
+      certificateDaysRemaining: daysRemaining,
+      certificateStatusCheckedAt: checkedAt,
+    };
+  }
+
+  return {
+    certificateStatus: 'installed',
+    certificateSummary: `Certificate installed, not due for renewal (${daysRemaining}d left).`,
+    certificateExpiresAt: expiresAt,
+    certificateDaysRemaining: daysRemaining,
+    certificateStatusCheckedAt: checkedAt,
+  };
+};
+
+const runRootShell = async (command: string): Promise<RootShellResult> => {
+  try {
+    const result = await runRootBinary('/bin/sh', ['-lc', command]);
+    return {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: 0,
+    };
+  } catch (error) {
+    const shellError = error as Error & {
+      stdout?: string;
+      stderr?: string;
+      code?: number | string | null;
+    };
+    return {
+      stdout: shellError.stdout ?? '',
+      stderr: shellError.stderr ?? shellError.message,
+      exitCode: typeof shellError.code === 'number' ? shellError.code : null,
+    };
+  }
+};
+
+const normalizeDnsProviderToken = (value: string) => {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z0-9-]+$/.test(normalized)) {
+    throw new Error('dnsProvider must contain only lowercase letters, digits, and hyphens.');
+  }
+  return normalized;
+};
+
+const inspectLetsEncryptCertificateLocal = async (
+  certificateHostname: string,
+): Promise<LetsEncryptCertificateInspection> => {
+  const fullchainPath = `/etc/letsencrypt/live/${certificateHostname}/fullchain.pem`;
+  const checkedAt = new Date().toISOString();
+  const result = await runRootShell([
+    `if [ -f ${shellEscape(fullchainPath)} ]; then`,
+    `  expiry="$(openssl x509 -in ${shellEscape(fullchainPath)} -noout -enddate 2>/dev/null | cut -d= -f2-)";`,
+    "  echo '__RECTRIX_CERT_STATUS__=installed';",
+    '  echo "__RECTRIX_CERT_EXPIRY__=${expiry}";',
+    'else',
+    "  echo '__RECTRIX_CERT_STATUS__=missing';",
+    'fi',
+  ].join(' '));
+
+  if (result.exitCode !== 0) {
+    return {
+      certificateStatus: 'unknown',
+      certificateSummary:
+        summarizeShellFailure(result) || 'Unable to inspect certificate status.',
+      certificateExpiresAt: null,
+      certificateDaysRemaining: null,
+      certificateStatusCheckedAt: checkedAt,
+    };
+  }
+
+  const combinedOutput = `${result.stdout}
+${result.stderr}`;
+  const statusMatch = combinedOutput.match(/__RECTRIX_CERT_STATUS__=(.+)/);
+  const expiryMatch = combinedOutput.match(/__RECTRIX_CERT_EXPIRY__=(.+)/);
+  if (!statusMatch) {
+    return {
+      certificateStatus: 'unknown',
+      certificateSummary: 'Unable to determine certificate status.',
+      certificateExpiresAt: null,
+      certificateDaysRemaining: null,
+      certificateStatusCheckedAt: checkedAt,
+    };
+  }
+
+  if (statusMatch[1].trim() !== 'installed') {
+    return buildCertificateInspection(null, checkedAt);
+  }
+
+  return buildCertificateInspection(
+    parseCertificateExpiry(expiryMatch?.[1] ?? ''),
+    checkedAt,
+  );
+};
+
+const deployLetsEncryptDns01 = async (
+  payload: z.infer<typeof letsEncryptDnsDeploySchema>,
+): Promise<JobResult> => {
+  const dnsProvider = normalizeDnsProviderToken(payload.dnsProvider);
+  const certHostname = payload.certificateHostname.trim();
+  const contactEmail = payload.contactEmail.trim();
+  const environmentFlag = payload.environment === 'staging' ? '--staging ' : '';
+  const credentialsRef = payload.dnsCredentialsSecretRef?.trim();
+  if (credentialsRef && !credentialsRef.startsWith('/')) {
+    throw new Error('dnsCredentialsSecretRef must be an absolute file path on the host.');
+  }
+
+  const sharedMosquittoCertDir = '/etc/mosquitto/certs';
+  const mosquittoCertDir = `/etc/mosquitto/certs/${certHostname}`;
+  const letsEncryptLiveDir = `/etc/letsencrypt/live/${certHostname}`;
+  const defaultMosquittoCertPaths = {
+    cafile: '/etc/mosquitto/certs/ca.crt',
+    certfile: '/etc/mosquitto/certs/fullchain.pem',
+    keyfile: '/etc/mosquitto/certs/privkey.pem',
+  };
+  const mosquittoCertPaths = {
+    cafile: `${mosquittoCertDir}/ca.crt`,
+    certfile: `${mosquittoCertDir}/fullchain.pem`,
+    keyfile: `${mosquittoCertDir}/privkey.pem`,
+  };
+
+  const systemCaBundlePath = await (async () => {
+    for (const candidate of systemCaBundleCandidates) {
+      try {
+        await fs.access(candidate);
+        return candidate;
+      } catch {
+        continue;
+      }
+    }
+    throw new Error(
+      `Unable to locate a system CA bundle. Checked: ${systemCaBundleCandidates.join(', ')}`,
+    );
+  })();
+
+  const credentialsFlag = credentialsRef
+    ? ` --dns-${dnsProvider}-credentials ${shellEscape(credentialsRef)}`
+    : '';
+  const certbotCommand = [
+    `certbot certonly ${environmentFlag}--dns-${dnsProvider}${credentialsFlag} --preferred-challenges dns`.trim(),
+    '--agree-tos --non-interactive --keep-until-expiring',
+    `-m ${shellEscape(contactEmail)}`,
+    `-d ${shellEscape(certHostname)}`,
+  ].join(' ');
+
+  const steps: LetsEncryptDeployStepResult[] = [];
+  let certificateInspection: LetsEncryptCertificateInspection | null = null;
+  let dryRunWarning: string | null = null;
+
+  const runStep = async (
+    stepName: string,
+    command: string,
+    allowFailure = false,
+  ) => {
+    const result = await runRootShell(command);
+    steps.push({
+      step: stepName,
+      command,
+      ok: result.exitCode === 0,
+      exitCode: result.exitCode,
+      stdout: truncateOutput(result.stdout),
+      stderr: truncateOutput(result.stderr),
+    });
+    if (!allowFailure && result.exitCode !== 0) {
+      throw new Error(`${stepName} failed: ${summarizeShellFailure(result)}`);
+    }
+    return result;
+  };
+
+  await runStep(
+    'Ensure certbot and DNS plugin availability',
+    [
+      'if command -v certbot >/dev/null 2>&1 && certbot plugins 2>/dev/null | grep -q ' + shellEscape(`dns-${dnsProvider}`) + '; then',
+      "  echo 'certbot DNS plugin is already available';",
+      '  exit 0;',
+      'fi;',
+      "echo 'certbot DNS plugin is missing; attempting installation...';",
+      'if command -v apt-get >/dev/null 2>&1; then',
+      '  export DEBIAN_FRONTEND=noninteractive;',
+      `  apt-get update && apt-get install -y certbot python3-certbot-dns-${dnsProvider};`,
+      'elif command -v dnf >/dev/null 2>&1; then',
+      `  dnf install -y certbot python3-certbot-dns-${dnsProvider} || dnf install -y certbot certbot-dns-${dnsProvider};`,
+      'elif command -v yum >/dev/null 2>&1; then',
+      `  yum install -y certbot python3-certbot-dns-${dnsProvider} || yum install -y certbot certbot-dns-${dnsProvider};`,
+      'elif command -v zypper >/dev/null 2>&1; then',
+      `  zypper --non-interactive install certbot python3-certbot-dns-${dnsProvider} || zypper --non-interactive install certbot certbot-dns-${dnsProvider};`,
+      'else',
+      "  echo 'Automatic DNS plugin installation is only implemented for apt/dnf/yum/zypper hosts';",
+      '  exit 1;',
+      'fi;',
+      'if ! command -v certbot >/dev/null 2>&1; then',
+      "  echo 'certbot is still unavailable after installation attempt';",
+      '  exit 1;',
+      'fi;',
+      'if ! certbot plugins 2>/dev/null | grep -q ' + shellEscape(`dns-${dnsProvider}`) + '; then',
+      `  echo 'certbot DNS plugin dns-${dnsProvider} is still unavailable after installation attempt';`,
+      '  exit 1;',
+      'fi',
+    ].join(' '),
+  );
+
+  await runStep('Issue certificate with certbot', certbotCommand);
+  certificateInspection = await inspectLetsEncryptCertificateLocal(certHostname);
+
+  if (payload.renewDryRun) {
+    const allowDryRunFailure =
+      certificateInspection.certificateStatus === 'installed'
+      && (certificateInspection.certificateDaysRemaining ?? 31) > 30;
+    await runStep(
+      'Run certbot renewal dry-run',
+      'certbot renew --dry-run',
+      allowDryRunFailure,
+    );
+    const dryRunStep = steps[steps.length - 1];
+    if (allowDryRunFailure && dryRunStep && !dryRunStep.ok) {
+      dryRunWarning =
+        `Renewal dry-run failed, but ${certHostname} is already installed and not due for renewal. `
+        + 'Review the dry-run output before the next renewal window.';
+    }
+  }
+
+  await runStep(
+    'Prepare mosquitto certificate directories',
+    [
+      `install -d -o root -g mosquitto -m 750 ${shellEscape(sharedMosquittoCertDir)}`,
+      `install -d -o root -g mosquitto -m 750 ${shellEscape(mosquittoCertDir)}`,
+    ].join(' && '),
+  );
+
+  if (payload.renewalStrategy === 'copy-and-reload') {
+    await runStep(
+      'Copy certificate artifacts to mosquitto paths',
+      [
+        `install -o root -g mosquitto -m 640 ${shellEscape(`${letsEncryptLiveDir}/fullchain.pem`)} ${shellEscape(mosquittoCertPaths.certfile)}`,
+        `install -o root -g mosquitto -m 640 ${shellEscape(`${letsEncryptLiveDir}/privkey.pem`)} ${shellEscape(mosquittoCertPaths.keyfile)}`,
+        `install -o root -g mosquitto -m 640 ${shellEscape(`${letsEncryptLiveDir}/fullchain.pem`)} ${shellEscape(defaultMosquittoCertPaths.certfile)}`,
+        `install -o root -g mosquitto -m 640 ${shellEscape(`${letsEncryptLiveDir}/privkey.pem`)} ${shellEscape(defaultMosquittoCertPaths.keyfile)}`,
+      ].join(' && '),
+    );
+  } else {
+    await runStep(
+      'Symlink hostname certificate artifacts to mosquitto path',
+      [
+        `ln -sfn ${shellEscape(`${letsEncryptLiveDir}/fullchain.pem`)} ${shellEscape(mosquittoCertPaths.certfile)}`,
+        `ln -sfn ${shellEscape(`${letsEncryptLiveDir}/privkey.pem`)} ${shellEscape(mosquittoCertPaths.keyfile)}`,
+      ].join(' && '),
+    );
+    await runStep(
+      'Copy broker compatibility certificate artifacts to default mosquitto paths',
+      [
+        `install -o root -g mosquitto -m 640 ${shellEscape(`${letsEncryptLiveDir}/fullchain.pem`)} ${shellEscape(defaultMosquittoCertPaths.certfile)}`,
+        `install -o root -g mosquitto -m 640 ${shellEscape(`${letsEncryptLiveDir}/privkey.pem`)} ${shellEscape(defaultMosquittoCertPaths.keyfile)}`,
+      ].join(' && '),
+    );
+  }
+
+  await runStep(
+    'Install CA bundle for mosquitto',
+    [
+      `install -o root -g mosquitto -m 640 ${shellEscape(systemCaBundlePath)} ${shellEscape(mosquittoCertPaths.cafile)}`,
+      `install -o root -g mosquitto -m 640 ${shellEscape(systemCaBundlePath)} ${shellEscape(defaultMosquittoCertPaths.cafile)}`,
+    ].join(' && '),
+  );
+
+  await grantTelegrafTlsAccess([
+    mosquittoCertPaths.cafile,
+    defaultMosquittoCertPaths.cafile,
+  ]);
+
+  const brokerUnits = payload.brokerServices.map((serviceName) => {
+    const safeServiceName = assertAllowedServiceName(serviceName, 'mqtt');
+    return `${safeServiceName}.service`;
+  });
+
+  if (brokerUnits.length > 0) {
+    for (const unit of brokerUnits) {
+      await runStep(
+        `Reload service ${unit}`,
+        `systemctl reload ${shellEscape(unit)} || systemctl restart ${shellEscape(unit)}`,
+      );
+    }
+  } else {
+    await runStep(
+      'Reload default mosquitto service',
+      "if systemctl list-unit-files mosquitto.service >/dev/null 2>&1; then systemctl reload mosquitto.service || systemctl restart mosquitto.service; else echo 'mosquitto.service not found, skipping reload'; fi",
+      true,
+    );
+  }
+
+  return {
+    ok: true,
+    summary: `Deployed DNS-01 certificate for ${certHostname}`,
+    details: {
+      planId: payload.planId,
+      certificateHostname: certHostname,
+      certbotCommand,
+      warning: dryRunWarning,
+      steps,
+      certificateInspection,
+    },
+  };
 };
 
 const grantTelegrafTlsAccess = async (paths: string[]) => {
@@ -1132,6 +1530,8 @@ export const runJob = async (job: AgentJob): Promise<JobResult> => {
       return applyFiles(fileApplySchema.parse(job.payload), ['mosquitto']);
     case 'mosquitto.acl.sync':
       return applyFiles(fileApplySchema.parse(job.payload), ['mosquitto']);
+    case 'letsencrypt.dns01.deploy':
+      return deployLetsEncryptDns01(letsEncryptDnsDeploySchema.parse(job.payload));
     case 'telegraf.runtime.snapshot':
       return loadTelegrafRuntimeSnapshot(
         telegrafRuntimeSnapshotSchema.parse(job.payload),

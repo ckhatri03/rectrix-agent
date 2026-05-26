@@ -65,6 +65,13 @@ const DEFAULT_ALLOWED_CONFIG_ROOTS = [
   '/etc/systemd/system',
   '/var/lib/mosquitto',
 ] as const;
+const DEFAULT_ALLOWED_UNIT_PATTERNS = [
+  '^mosquitto(?:@.+)?\\.service$',
+  '^telegraf(?:@.+)?\\.service$',
+  '^telegraf-.+\\.service$',
+  '^[a-z0-9_]+_mqtt\\.service$',
+  '^[a-z0-9_]+_telegraf\\.service$',
+] as const;
 
 export const CAPABILITIES: CapabilityKey[] = [
   'agent.diagnostics.snapshot',
@@ -134,13 +141,12 @@ export const config = {
       ...asList('ALLOWED_CONFIG_ROOTS', [...DEFAULT_ALLOWED_CONFIG_ROOTS]),
     ]),
   ],
-  allowedUnitPatterns: asList('ALLOWED_UNIT_PATTERNS', [
-    '^mosquitto(?:@.+)?\\.service$',
-    '^telegraf(?:@.+)?\\.service$',
-    '^telegraf-.+\\.service$',
-    '^[a-z0-9_]+_mqtt\\.service$',
-    '^[a-z0-9_]+_telegraf\\.service$',
-  ]).map((value) => new RegExp(value)),
+  allowedUnitPatterns: [
+    ...new Set([
+      ...DEFAULT_ALLOWED_UNIT_PATTERNS,
+      ...asList('ALLOWED_UNIT_PATTERNS', [...DEFAULT_ALLOWED_UNIT_PATTERNS]),
+    ]),
+  ].map((value) => new RegExp(value)),
   sudoBin: process.env.SUDO_BIN ?? '/usr/bin/sudo',
   aptGetBin: process.env.APT_GET_BIN ?? '/usr/bin/apt-get',
   systemctlBin: process.env.SYSTEMCTL_BIN ?? '/usr/bin/systemctl',

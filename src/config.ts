@@ -150,6 +150,7 @@ export const config = {
   ].map((value) => new RegExp(value)),
   sudoBin: process.env.SUDO_BIN ?? '/usr/bin/sudo',
   aptGetBin: process.env.APT_GET_BIN ?? '/usr/bin/apt-get',
+  certbotBin: process.env.CERTBOT_BIN ?? '/usr/bin/certbot',
   systemctlBin: process.env.SYSTEMCTL_BIN ?? '/usr/bin/systemctl',
   journalctlBin: process.env.JOURNALCTL_BIN ?? '/usr/bin/journalctl',
   installBin: process.env.INSTALL_BIN ?? '/usr/bin/install',

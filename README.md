@@ -56,7 +56,7 @@ The installer:
 - installs the app under `/opt/rectrix-agent/app`
 - installs `/etc/systemd/system/rectrix-agent.service`
 - creates `/etc/rectrix-agent/agent.env` if missing
-- creates a restricted sudoers file for package, file, and systemd operations
+- creates a restricted sudoers file for package, file, systemd, and direct certbot operations
 - prompts for the Rectrix-issued 24-character activation code during install
   when direct bootstrap credentials are not already present
 - expects that activation code to be supplied separately by Rectrix, for

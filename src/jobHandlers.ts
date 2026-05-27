@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { X509Certificate } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -138,6 +139,9 @@ const letsEncryptDnsDeploySchema = z.object({
   renewalStrategy: z.enum(['copy-and-reload', 'symlink-and-reload']),
   dnsProvider: z.string().trim().min(1),
   dnsCredentialsSecretRef: z.string().trim().min(1).optional(),
+  dnsApiKey: z.string().trim().min(1).optional(),
+  dnsApiSecret: z.string().trim().min(1).optional(),
+  dnsZone: z.string().trim().min(1).optional(),
   renewDryRun: z.boolean().optional().default(true),
   brokerServices: z.array(z.string().min(1)).default([]),
 });
@@ -679,60 +683,437 @@ const normalizeDnsProviderToken = (value: string) => {
   return normalized;
 };
 
+const parseCertificatePemExpiry = (value: string): string | null => {
+  const match = value.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/);
+  if (!match) {
+    return null;
+  }
+  try {
+    return parseCertificateExpiry(new X509Certificate(match[0]).validTo);
+  } catch {
+    return null;
+  }
+};
+
 const inspectLetsEncryptCertificateLocal = async (
   certificateHostname: string,
 ): Promise<LetsEncryptCertificateInspection> => {
   const fullchainPath = `/etc/letsencrypt/live/${certificateHostname}/fullchain.pem`;
   const checkedAt = new Date().toISOString();
-  const result = await runRootShell([
-    `if [ -f ${shellEscape(fullchainPath)} ]; then`,
-    `  expiry="$(openssl x509 -in ${shellEscape(fullchainPath)} -noout -enddate 2>/dev/null | cut -d= -f2-)";`,
-    "  echo '__RECTRIX_CERT_STATUS__=installed';",
-    '  echo "__RECTRIX_CERT_EXPIRY__=${expiry}";',
-    'else',
-    "  echo '__RECTRIX_CERT_STATUS__=missing';",
-    'fi',
-  ].join(' '));
 
-  if (result.exitCode !== 0) {
+  try {
+    const pemContents = await fs.readFile(fullchainPath, 'utf8');
+    const expiresAt = parseCertificatePemExpiry(pemContents);
+    if (!expiresAt) {
+      return {
+        certificateStatus: 'unknown',
+        certificateSummary: 'Unable to parse installed certificate expiry.',
+        certificateExpiresAt: null,
+        certificateDaysRemaining: null,
+        certificateStatusCheckedAt: checkedAt,
+      };
+    }
+    return buildCertificateInspection(expiresAt, checkedAt);
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === 'ENOENT') {
+      return buildCertificateInspection(null, checkedAt);
+    }
     return {
       certificateStatus: 'unknown',
-      certificateSummary:
-        summarizeShellFailure(result) || 'Unable to inspect certificate status.',
+      certificateSummary: err.message || 'Unable to inspect certificate status.',
       certificateExpiresAt: null,
       certificateDaysRemaining: null,
       certificateStatusCheckedAt: checkedAt,
     };
   }
+};
 
-  const combinedOutput = `${result.stdout}
-${result.stderr}`;
-  const statusMatch = combinedOutput.match(/__RECTRIX_CERT_STATUS__=(.+)/);
-  const expiryMatch = combinedOutput.match(/__RECTRIX_CERT_EXPIRY__=(.+)/);
-  if (!statusMatch) {
-    return {
-      certificateStatus: 'unknown',
-      certificateSummary: 'Unable to determine certificate status.',
-      certificateExpiresAt: null,
-      certificateDaysRemaining: null,
-      certificateStatusCheckedAt: checkedAt,
-    };
+const summarizeCommandFailure = (error: unknown) => {
+  const commandError = error as Error & {
+    stdout?: string;
+    stderr?: string;
+    code?: number | string | null;
+  };
+  return commandError.stderr?.trim()
+    || commandError.stdout?.trim()
+    || commandError.message
+    || `exit code ${commandError.code ?? 'unknown'}`;
+};
+
+const ensureCertbotAvailable = async () => {
+  if (await binaryExists(config.certbotBin)) {
+    return 'certbot is already available';
+  }
+  if (!(await binaryExists(config.aptGetBin))) {
+    throw new Error(
+      `certbot is not installed and ${config.aptGetBin} is unavailable for automatic installation.`,
+    );
+  }
+  await runRootBinary(config.aptGetBin, ['update']);
+  await runRootBinary(config.aptGetBin, ['install', '-y', 'certbot']);
+  if (!(await binaryExists(config.certbotBin))) {
+    throw new Error('certbot is still unavailable after installation attempt.');
+  }
+  return 'Installed certbot with apt-get';
+};
+
+const setManagedSymlink = async (targetPath: string, linkPath: string) => {
+  await ensureManagedDirectory(path.dirname(linkPath), {
+    mode: '0750',
+    owner: 'root',
+    group: 'mosquitto',
+  });
+  await runRootBinary(config.python3Bin, [
+    '-c',
+    [
+      'import os, sys',
+      'target, link = sys.argv[1], sys.argv[2]',
+      'try:',
+      '    os.unlink(link)',
+      'except FileNotFoundError:',
+      '    pass',
+      'os.symlink(target, link)',
+    ].join('\n'),
+    targetPath,
+    linkPath,
+  ]);
+};
+
+const persistGoDaddyCredentialsFile = async (
+  certificateHostname: string,
+  payload: z.infer<typeof letsEncryptDnsDeploySchema>,
+) => {
+  const apiKey = payload.dnsApiKey?.trim();
+  const apiSecret = payload.dnsApiSecret?.trim();
+  if (!apiKey || !apiSecret) {
+    throw new Error('GoDaddy API key and secret are required for DNS-01 deployment.');
   }
 
-  if (statusMatch[1].trim() !== 'installed') {
-    return buildCertificateInspection(null, checkedAt);
+  const credentialsDir = '/etc/letsencrypt/rectrix-godaddy';
+  const credentialsPath = `${credentialsDir}/${certificateHostname}.env`;
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rectrix-godaddy-'));
+  const tempPath = path.join(tempDir, 'credentials.env');
+  const contents = [
+    `GODADDY_API_KEY=${apiKey}`,
+    `GODADDY_API_SECRET=${apiSecret}`,
+    ...(payload.dnsZone?.trim() ? [`GODADDY_ZONE=${payload.dnsZone.trim()}`] : []),
+    '',
+  ].join('\n');
+
+  await fs.writeFile(tempPath, contents, { mode: 0o600 });
+  try {
+    await runRootBinary(config.installBin, [
+      '-d',
+      '-o',
+      'root',
+      '-g',
+      'root',
+      '-m',
+      '700',
+      credentialsDir,
+    ]);
+    await runRootBinary(config.installBin, [
+      '-D',
+      '-o',
+      'root',
+      '-g',
+      'root',
+      '-m',
+      '600',
+      tempPath,
+      credentialsPath,
+    ]);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
   }
 
-  return buildCertificateInspection(
-    parseCertificateExpiry(expiryMatch?.[1] ?? ''),
-    checkedAt,
-  );
+  return credentialsPath;
+};
+
+const reloadBrokerUnit = async (unit: string) => {
+  try {
+    await systemctl('reload', [unit]);
+    return 'reloaded';
+  } catch {
+    await systemctl('restart', [unit]);
+    return 'restarted';
+  }
+};
+
+const deployLetsEncryptDns01GoDaddy = async (
+  payload: z.infer<typeof letsEncryptDnsDeploySchema>,
+): Promise<JobResult> => {
+  const certHostname = payload.certificateHostname.trim();
+  const contactEmail = payload.contactEmail.trim();
+  const sharedMosquittoCertDir = '/etc/mosquitto/certs';
+  const mosquittoCertDir = `/etc/mosquitto/certs/${certHostname}`;
+  const letsEncryptLiveDir = `/etc/letsencrypt/live/${certHostname}`;
+  const defaultMosquittoCertPaths = {
+    cafile: '/etc/mosquitto/certs/ca.crt',
+    certfile: '/etc/mosquitto/certs/fullchain.pem',
+    keyfile: '/etc/mosquitto/certs/privkey.pem',
+  };
+  const mosquittoCertPaths = {
+    cafile: `${mosquittoCertDir}/ca.crt`,
+    certfile: `${mosquittoCertDir}/fullchain.pem`,
+    keyfile: `${mosquittoCertDir}/privkey.pem`,
+  };
+
+  const hookScriptPath = path.join(__dirname, 'godaddyDnsHook.js');
+  await fs.access(hookScriptPath);
+  const credentialsPath = await persistGoDaddyCredentialsFile(certHostname, payload);
+  const authHook = [
+    process.execPath,
+    hookScriptPath,
+    'auth',
+    '--credentials-file',
+    credentialsPath,
+  ].map((value) => shellEscape(value)).join(' ');
+  const cleanupHook = [
+    process.execPath,
+    hookScriptPath,
+    'cleanup',
+    '--credentials-file',
+    credentialsPath,
+  ].map((value) => shellEscape(value)).join(' ');
+  const certbotArgs = [
+    'certonly',
+    ...(payload.environment === 'staging' ? ['--staging'] : []),
+    '--manual',
+    '--preferred-challenges',
+    'dns',
+    '--manual-public-ip-logging-ok',
+    '--manual-auth-hook',
+    authHook,
+    '--manual-cleanup-hook',
+    cleanupHook,
+    '--agree-tos',
+    '--non-interactive',
+    '--keep-until-expiring',
+    '-m',
+    contactEmail,
+    '-d',
+    certHostname,
+  ];
+  const certbotCommand = [
+    config.certbotBin,
+    ...certbotArgs.map((value) => shellEscape(value)),
+  ].join(' ');
+
+  const steps: LetsEncryptDeployStepResult[] = [];
+  let certificateInspection: LetsEncryptCertificateInspection | null = null;
+  let dryRunWarning: string | null = null;
+
+  const runBinaryStep = async (
+    stepName: string,
+    binary: string,
+    args: string[],
+    allowFailure = false,
+    commandPreview = [binary, ...args.map((value) => shellEscape(value))].join(' '),
+  ) => {
+    try {
+      const result = await runRootBinary(binary, args);
+      steps.push({
+        step: stepName,
+        command: commandPreview,
+        ok: true,
+        exitCode: 0,
+        stdout: truncateOutput(result.stdout),
+        stderr: truncateOutput(result.stderr),
+      });
+      return result;
+    } catch (error) {
+      const commandError = error as Error & {
+        stdout?: string;
+        stderr?: string;
+        code?: number | string | null;
+      };
+      steps.push({
+        step: stepName,
+        command: commandPreview,
+        ok: false,
+        exitCode: typeof commandError.code === 'number' ? commandError.code : null,
+        stdout: truncateOutput(commandError.stdout ?? ''),
+        stderr: truncateOutput(commandError.stderr ?? commandError.message),
+      });
+      if (!allowFailure) {
+        throw new Error(`${stepName} failed: ${summarizeCommandFailure(error)}`);
+      }
+      return {
+        stdout: commandError.stdout ?? '',
+        stderr: commandError.stderr ?? commandError.message,
+      };
+    }
+  };
+
+  try {
+    await runBinaryStep(
+      'Ensure certbot availability',
+      config.certbotBin,
+      ['--version'],
+      false,
+      `${config.certbotBin} --version`,
+    );
+  } catch {
+    const detail = await ensureCertbotAvailable();
+    steps.push({
+      step: 'Install certbot',
+      command: `${config.aptGetBin} update && ${config.aptGetBin} install -y certbot`,
+      ok: true,
+      exitCode: 0,
+      stdout: detail,
+      stderr: '',
+    });
+  }
+
+  await runBinaryStep('Issue certificate with certbot', config.certbotBin, certbotArgs, false, certbotCommand);
+  certificateInspection = await inspectLetsEncryptCertificateLocal(certHostname);
+
+  if (payload.renewDryRun) {
+    const allowDryRunFailure =
+      certificateInspection.certificateStatus === 'installed'
+      && (certificateInspection.certificateDaysRemaining ?? 31) > 30;
+    await runBinaryStep(
+      'Run certbot renewal dry-run',
+      config.certbotBin,
+      ['renew', '--dry-run'],
+      allowDryRunFailure,
+      `${config.certbotBin} renew --dry-run`,
+    );
+    const dryRunStep = steps[steps.length - 1];
+    if (allowDryRunFailure && dryRunStep && !dryRunStep.ok) {
+      dryRunWarning =
+        `Renewal dry-run failed, but ${certHostname} is already installed and not due for renewal. `
+        + 'Review the dry-run output before the next renewal window.';
+    }
+  }
+
+  await ensureManagedDirectory(sharedMosquittoCertDir, {
+    mode: '0750',
+    owner: 'root',
+    group: 'mosquitto',
+  });
+  await ensureManagedDirectory(mosquittoCertDir, {
+    mode: '0750',
+    owner: 'root',
+    group: 'mosquitto',
+  });
+  steps.push({
+    step: 'Prepare mosquitto certificate directories',
+    command: `install -d -o root -g mosquitto -m 750 ${sharedMosquittoCertDir} ${mosquittoCertDir}`,
+    ok: true,
+    exitCode: 0,
+    stdout: '',
+    stderr: '',
+  });
+
+  if (payload.renewalStrategy === 'copy-and-reload') {
+    await installTlsArtifact(`${letsEncryptLiveDir}/fullchain.pem`, mosquittoCertPaths.certfile, '0640');
+    await installTlsArtifact(`${letsEncryptLiveDir}/privkey.pem`, mosquittoCertPaths.keyfile, '0640');
+    await installTlsArtifact(`${letsEncryptLiveDir}/fullchain.pem`, defaultMosquittoCertPaths.certfile, '0640');
+    await installTlsArtifact(`${letsEncryptLiveDir}/privkey.pem`, defaultMosquittoCertPaths.keyfile, '0640');
+    steps.push({
+      step: 'Copy certificate artifacts to mosquitto paths',
+      command: 'install fullchain.pem and privkey.pem into mosquitto certificate paths',
+      ok: true,
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    });
+  } else {
+    await setManagedSymlink(`${letsEncryptLiveDir}/fullchain.pem`, mosquittoCertPaths.certfile);
+    await setManagedSymlink(`${letsEncryptLiveDir}/privkey.pem`, mosquittoCertPaths.keyfile);
+    await installTlsArtifact(`${letsEncryptLiveDir}/fullchain.pem`, defaultMosquittoCertPaths.certfile, '0640');
+    await installTlsArtifact(`${letsEncryptLiveDir}/privkey.pem`, defaultMosquittoCertPaths.keyfile, '0640');
+    steps.push({
+      step: 'Symlink hostname certificate artifacts to mosquitto path',
+      command: 'symlink hostname certificate files and copy default broker compatibility files',
+      ok: true,
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    });
+  }
+
+  const systemCaBundlePath = await installPublicCaBundle(mosquittoCertPaths.cafile);
+  await installTlsArtifact(systemCaBundlePath, defaultMosquittoCertPaths.cafile, '0640');
+  steps.push({
+    step: 'Install CA bundle for mosquitto',
+    command: `install ${systemCaBundlePath} into mosquitto CA bundle paths`,
+    ok: true,
+    exitCode: 0,
+    stdout: '',
+    stderr: '',
+  });
+
+  await grantTelegrafTlsAccess([
+    mosquittoCertPaths.cafile,
+    defaultMosquittoCertPaths.cafile,
+  ]);
+
+  const brokerUnits = payload.brokerServices.map((serviceName) => {
+    const safeServiceName = assertAllowedServiceName(serviceName, 'mqtt');
+    return `${safeServiceName}.service`;
+  });
+
+  if (brokerUnits.length > 0) {
+    for (const unit of brokerUnits) {
+      const action = await reloadBrokerUnit(unit);
+      steps.push({
+        step: `Reload service ${unit}`,
+        command: `systemctl reload ${unit} || systemctl restart ${unit}`,
+        ok: true,
+        exitCode: 0,
+        stdout: action,
+        stderr: '',
+      });
+    }
+  } else {
+    try {
+      const action = await reloadBrokerUnit('mosquitto.service');
+      steps.push({
+        step: 'Reload default mosquitto service',
+        command: 'systemctl reload mosquitto.service || systemctl restart mosquitto.service',
+        ok: true,
+        exitCode: 0,
+        stdout: action,
+        stderr: '',
+      });
+    } catch (error) {
+      steps.push({
+        step: 'Reload default mosquitto service',
+        command: 'systemctl reload mosquitto.service || systemctl restart mosquitto.service',
+        ok: false,
+        exitCode: null,
+        stdout: '',
+        stderr: summarizeCommandFailure(error),
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    summary: `Deployed DNS-01 certificate for ${certHostname}`,
+    details: {
+      planId: payload.planId,
+      certificateHostname: certHostname,
+      certbotCommand,
+      warning: dryRunWarning,
+      steps,
+      certificateInspection,
+    },
+  };
 };
 
 const deployLetsEncryptDns01 = async (
   payload: z.infer<typeof letsEncryptDnsDeploySchema>,
 ): Promise<JobResult> => {
   const dnsProvider = normalizeDnsProviderToken(payload.dnsProvider);
+  if (dnsProvider === 'godaddy') {
+    return deployLetsEncryptDns01GoDaddy(payload);
+  }
+
   const certHostname = payload.certificateHostname.trim();
   const contactEmail = payload.contactEmail.trim();
   const environmentFlag = payload.environment === 'staging' ? '--staging ' : '';

@@ -468,28 +468,27 @@ const installTlsArtifact = async (
   targetPath: string,
   mode: '0640' | '0644' = '0640',
 ) => {
-  try {
-    await fs.access(sourcePath);
-  } catch {
-    throw new Error(`TLS source file ${sourcePath} does not exist on the host.`);
-  }
-
   await ensureManagedDirectory(path.dirname(targetPath), {
     mode: '0750',
     owner: 'root',
     group: 'mosquitto',
   });
-  await runRootBinary(config.installBin, [
-    '-D',
-    '-o',
-    'root',
-    '-g',
-    'mosquitto',
-    '-m',
-    mode,
-    sourcePath,
-    targetPath,
-  ]);
+
+  try {
+    await runRootBinary(config.installBin, [
+      '-D',
+      '-o',
+      'root',
+      '-g',
+      'mosquitto',
+      '-m',
+      mode,
+      sourcePath,
+      targetPath,
+    ]);
+  } catch (error) {
+    throw new Error(`TLS source file ${sourcePath} does not exist on the host.`);
+  }
 };
 
 const installPublicCaBundle = async (cafile: string) => {

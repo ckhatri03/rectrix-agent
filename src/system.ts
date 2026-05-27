@@ -174,6 +174,20 @@ export const managedPathExists = async (targetPath: string) => {
   try {
     await fs.access(resolvedPath);
     return true;
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code !== 'EACCES' && err.code !== 'EPERM') {
+      return false;
+    }
+  }
+
+  try {
+    await runRootBinary(config.python3Bin, [
+      '-c',
+      'import os, sys; raise SystemExit(0 if os.path.exists(sys.argv[1]) else 1)',
+      resolvedPath,
+    ]);
+    return true;
   } catch {
     return false;
   }

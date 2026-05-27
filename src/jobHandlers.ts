@@ -504,6 +504,65 @@ const installPublicCaBundle = async (cafile: string) => {
   );
 };
 
+const resolveMosquittoSharedTlsFallback = async (configuredPath: string) => {
+  const sharedCertDir = '/etc/mosquitto/certs';
+  const configuredDir = path.dirname(configuredPath);
+  if (configuredDir !== sharedCertDir) {
+    return null;
+  }
+
+  const filename = path.basename(configuredPath);
+  let dirEntries: Array<{ isDirectory(): boolean; name: string }>;
+  try {
+    dirEntries = await fs.readdir(sharedCertDir, { encoding: 'utf8', withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const candidatePaths: string[] = [];
+  for (const entry of dirEntries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const candidatePath = path.join(sharedCertDir, entry.name, filename);
+    if (await managedPathExists(candidatePath)) {
+      candidatePaths.push(candidatePath);
+    }
+  }
+
+  if (candidatePaths.length === 0) {
+    return null;
+  }
+  if (candidatePaths.length === 1) {
+    return candidatePaths[0];
+  }
+
+  throw new Error(
+    `Configured TLS file ${configuredPath} does not exist on the host, and multiple hostname-scoped fallback files were found: ${candidatePaths.join(', ')}`,
+  );
+};
+
+const ensureBrokerTlsArtifact = async (
+  configuredPath: string,
+  label: 'CA bundle' | 'certificate file' | 'private key file',
+  mode: '0640' | '0644' = '0640',
+) => {
+  if (await managedPathExists(configuredPath)) {
+    await chownManagedPath(configuredPath, 'root', 'mosquitto');
+    await chmodManagedPath(configuredPath, mode);
+    return configuredPath;
+  }
+
+  const fallbackPath = await resolveMosquittoSharedTlsFallback(configuredPath);
+  if (!fallbackPath) {
+    throw new Error(`Configured ${label} ${configuredPath} does not exist on the host.`);
+  }
+
+  await installTlsArtifact(fallbackPath, configuredPath, mode);
+  return fallbackPath;
+};
+
 const prepareBrokerTlsFiles = async (
   payload: z.infer<typeof brokerApplySchema>,
 ) => {
@@ -532,11 +591,8 @@ const prepareBrokerTlsFiles = async (
 
   if (tls.installPublicCaBundle) {
     prepared.push(await installPublicCaBundle(tls.cafile));
-  } else if (await managedPathExists(tls.cafile)) {
-    await chownManagedPath(tls.cafile, 'root', 'mosquitto');
-    await chmodManagedPath(tls.cafile, '0640');
   } else {
-    throw new Error(`Configured CA bundle ${tls.cafile} does not exist on the host.`);
+    prepared.push(await ensureBrokerTlsArtifact(tls.cafile, 'CA bundle', '0640'));
   }
 
   if (tls.certbotLiveDir) {
@@ -548,18 +604,8 @@ const prepareBrokerTlsFiles = async (
     return prepared;
   }
 
-  if (!(await managedPathExists(tls.certfile))) {
-    throw new Error(`Configured certificate file ${tls.certfile} does not exist on the host.`);
-  }
-  if (!(await managedPathExists(tls.keyfile))) {
-    throw new Error(`Configured private key file ${tls.keyfile} does not exist on the host.`);
-  }
-
-  await chownManagedPath(tls.certfile, 'root', 'mosquitto');
-  await chmodManagedPath(tls.certfile, '0640');
-  await chownManagedPath(tls.keyfile, 'root', 'mosquitto');
-  await chmodManagedPath(tls.keyfile, '0640');
-  prepared.push(tls.certfile, tls.keyfile);
+  prepared.push(await ensureBrokerTlsArtifact(tls.certfile, 'certificate file', '0640'));
+  prepared.push(await ensureBrokerTlsArtifact(tls.keyfile, 'private key file', '0640'));
   return prepared;
 };
 

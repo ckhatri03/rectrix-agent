@@ -142,7 +142,7 @@ const letsEncryptDnsDeploySchema = z.object({
   dnsApiKey: z.string().trim().min(1).optional(),
   dnsApiSecret: z.string().trim().min(1).optional(),
   dnsZone: z.string().trim().min(1).optional(),
-  renewDryRun: z.boolean().optional().default(true),
+  renewDryRun: z.boolean().optional().default(false),
   brokerServices: z.array(z.string().min(1)).default([]),
 });
 
@@ -632,6 +632,14 @@ type LetsEncryptCertificateInspection = {
   certificateStatusCheckedAt: string | null;
 };
 
+type LetsEncryptResultMetadata = {
+  certificateHostname: string;
+  certbotLiveDir: string;
+  certbotRenewalConfigPath: string;
+  certbotRenewCommand: string;
+  renewDryRunEnabled: boolean;
+};
+
 const truncateOutput = (value: string, max = 2000) =>
   value.length > max
     ? `${value.slice(0, max)}… [truncated ${value.length - max} chars]`
@@ -795,6 +803,18 @@ const summarizeCommandFailure = (error: unknown) => {
     || `exit code ${commandError.code ?? 'unknown'}`;
 };
 
+const buildLetsEncryptResultMetadata = (
+  certificateHostname: string,
+  letsEncryptLiveDir: string,
+  renewDryRunEnabled: boolean,
+): LetsEncryptResultMetadata => ({
+  certificateHostname,
+  certbotLiveDir: letsEncryptLiveDir,
+  certbotRenewalConfigPath: `/etc/letsencrypt/renewal/${certificateHostname}.conf`,
+  certbotRenewCommand: `${config.certbotBin} renew`,
+  renewDryRunEnabled,
+});
+
 const ensureCertbotAvailable = async () => {
   if (await binaryExists(config.certbotBin)) {
     return 'certbot is already available';
@@ -954,6 +974,11 @@ const deployLetsEncryptDns01GoDaddy = async (
     config.certbotBin,
     ...certbotArgs.map((value) => shellEscape(value)),
   ].join(' ');
+  const resultMetadata = buildLetsEncryptResultMetadata(
+    certHostname,
+    letsEncryptLiveDir,
+    payload.renewDryRun,
+  );
 
   const steps: LetsEncryptDeployStepResult[] = [];
   let certificateInspection: LetsEncryptCertificateInspection | null = null;
@@ -1025,21 +1050,18 @@ const deployLetsEncryptDns01GoDaddy = async (
   certificateInspection = await inspectLetsEncryptCertificateLocal(certHostname);
 
   if (payload.renewDryRun) {
-    const allowDryRunFailure =
-      certificateInspection.certificateStatus === 'installed'
-      && (certificateInspection.certificateDaysRemaining ?? 31) > 30;
     await runBinaryStep(
       'Run certbot renewal dry-run',
       config.certbotBin,
       ['renew', '--dry-run'],
-      allowDryRunFailure,
+      true,
       `${config.certbotBin} renew --dry-run`,
     );
     const dryRunStep = steps[steps.length - 1];
-    if (allowDryRunFailure && dryRunStep && !dryRunStep.ok) {
+    if (dryRunStep && !dryRunStep.ok) {
       dryRunWarning =
-        `Renewal dry-run failed, but ${certHostname} is already installed and not due for renewal. `
-        + 'Review the dry-run output before the next renewal window.';
+        `Renewal dry-run failed after certificate issuance for ${certHostname}. `
+        + 'Certificate deployment continued; review the dry-run output before the next renewal window.';
     }
   }
 
@@ -1151,7 +1173,7 @@ const deployLetsEncryptDns01GoDaddy = async (
     summary: `Deployed DNS-01 certificate for ${certHostname}`,
     details: {
       planId: payload.planId,
-      certificateHostname: certHostname,
+      ...resultMetadata,
       certbotCommand,
       warning: dryRunWarning,
       steps,
@@ -1213,6 +1235,11 @@ const deployLetsEncryptDns01 = async (
     `-m ${shellEscape(contactEmail)}`,
     `-d ${shellEscape(certHostname)}`,
   ].join(' ');
+  const resultMetadata = buildLetsEncryptResultMetadata(
+    certHostname,
+    letsEncryptLiveDir,
+    payload.renewDryRun,
+  );
 
   const steps: LetsEncryptDeployStepResult[] = [];
   let certificateInspection: LetsEncryptCertificateInspection | null = null;
@@ -1274,19 +1301,16 @@ const deployLetsEncryptDns01 = async (
   certificateInspection = await inspectLetsEncryptCertificateLocal(certHostname);
 
   if (payload.renewDryRun) {
-    const allowDryRunFailure =
-      certificateInspection.certificateStatus === 'installed'
-      && (certificateInspection.certificateDaysRemaining ?? 31) > 30;
     await runStep(
       'Run certbot renewal dry-run',
       'certbot renew --dry-run',
-      allowDryRunFailure,
+      true,
     );
     const dryRunStep = steps[steps.length - 1];
-    if (allowDryRunFailure && dryRunStep && !dryRunStep.ok) {
+    if (dryRunStep && !dryRunStep.ok) {
       dryRunWarning =
-        `Renewal dry-run failed, but ${certHostname} is already installed and not due for renewal. `
-        + 'Review the dry-run output before the next renewal window.';
+        `Renewal dry-run failed after certificate issuance for ${certHostname}. `
+        + 'Certificate deployment continued; review the dry-run output before the next renewal window.';
     }
   }
 
@@ -1363,7 +1387,7 @@ const deployLetsEncryptDns01 = async (
     summary: `Deployed DNS-01 certificate for ${certHostname}`,
     details: {
       planId: payload.planId,
-      certificateHostname: certHostname,
+      ...resultMetadata,
       certbotCommand,
       warning: dryRunWarning,
       steps,

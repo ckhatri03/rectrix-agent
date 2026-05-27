@@ -878,14 +878,14 @@ const deployLetsEncryptDns01GoDaddy = async (
     'auth',
     '--credentials-file',
     credentialsPath,
-  ].map((value) => shellEscape(value)).join(' ');
+  ].join(' ');
   const cleanupHook = [
     process.execPath,
     hookScriptPath,
     'cleanup',
     '--credentials-file',
     credentialsPath,
-  ].map((value) => shellEscape(value)).join(' ');
+  ].join(' ');
   const certbotArgs = [
     'certonly',
     ...(payload.environment === 'staging' ? ['--staging'] : []),
@@ -1469,6 +1469,13 @@ const applyBrokerRuntime = async (
     group: 'mosquitto',
   });
 
+  const preparedTlsFiles = await prepareBrokerTlsFiles(payload);
+
+  await syncMosquittoPasswords(
+    payload.passwordFilePath,
+    payload.mqttCredentials ?? [],
+  );
+
   const appliedFiles = await writeManagedFiles([
     {
       path: payload.configPath,
@@ -1481,12 +1488,6 @@ const applyBrokerRuntime = async (
       mode: '0644',
     },
   ]);
-  const preparedTlsFiles = await prepareBrokerTlsFiles(payload);
-
-  await syncMosquittoPasswords(
-    payload.passwordFilePath,
-    payload.mqttCredentials ?? [],
-  );
   await systemctl('daemon-reload');
   await systemctl('enable', [unit]);
   await systemctl('restart', [unit]);

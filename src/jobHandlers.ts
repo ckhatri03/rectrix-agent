@@ -435,6 +435,11 @@ const syncMosquittoPasswords = async (
   passwordFilePath: string,
   credentials: Array<{ username: string; password: string }>,
 ) => {
+  await ensureManagedDirectory(path.dirname(passwordFilePath), {
+    mode: '0750',
+    owner: 'mosquitto',
+    group: 'mosquitto',
+  });
   await ensureManagedFile(passwordFilePath, {
     mode: '0640',
     owner: 'mosquitto',
@@ -452,6 +457,10 @@ const syncMosquittoPasswords = async (
 
   await chownManagedPath(passwordFilePath, 'mosquitto', 'mosquitto');
   await chmodManagedPath(passwordFilePath, '0640');
+
+  if (!(await managedPathExists(passwordFilePath))) {
+    throw new Error(`Mosquitto password file ${passwordFilePath} was not created.`);
+  }
 };
 
 const installTlsArtifact = async (

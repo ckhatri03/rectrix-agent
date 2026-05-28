@@ -1,8 +1,9 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { promisify } from 'node:util';
 import { z } from 'zod';
 import { config } from './config';
 import { updateEnvFile } from './envFile';
@@ -25,6 +26,8 @@ import {
 } from './system';
 import { loadState } from './stateStore';
 import { AgentJob, JobResult, ManagedFile } from './types';
+
+const execFileAsync = promisify(execFile);
 
 const fileSchema = z.object({
   path: z.string().min(1),
@@ -757,6 +760,11 @@ const parseCertificatePemExpiry = (value: string): string | null => {
   }
 };
 
+const parseCertificateOpenSslExpiry = (value: string): string | null => {
+  const match = value.match(/notAfter=(.+)/);
+  return parseCertificateExpiry(match?.[1] ?? '');
+};
+
 const inspectLetsEncryptCertificateLocal = async (
   certificateHostname: string,
 ): Promise<LetsEncryptCertificateInspection> => {
@@ -765,17 +773,28 @@ const inspectLetsEncryptCertificateLocal = async (
 
   try {
     const pemContents = await fs.readFile(fullchainPath, 'utf8');
-    const expiresAt = parseCertificatePemExpiry(pemContents);
-    if (!expiresAt) {
-      return {
-        certificateStatus: 'unknown',
-        certificateSummary: 'Unable to parse installed certificate expiry.',
-        certificateExpiresAt: null,
-        certificateDaysRemaining: null,
-        certificateStatusCheckedAt: checkedAt,
-      };
+    const pemExpiresAt = parseCertificatePemExpiry(pemContents);
+    if (pemExpiresAt) {
+      return buildCertificateInspection(pemExpiresAt, checkedAt);
     }
-    return buildCertificateInspection(expiresAt, checkedAt);
+
+    try {
+      const result = await execFileAsync('openssl', ['x509', '-in', fullchainPath, '-noout', '-enddate']);
+      const opensslExpiresAt = parseCertificateOpenSslExpiry(result.stdout);
+      if (opensslExpiresAt) {
+        return buildCertificateInspection(opensslExpiresAt, checkedAt);
+      }
+    } catch {
+      // Fall through to the existing unknown-status response below.
+    }
+
+    return {
+      certificateStatus: 'unknown',
+      certificateSummary: 'Unable to parse installed certificate expiry.',
+      certificateExpiresAt: null,
+      certificateDaysRemaining: null,
+      certificateStatusCheckedAt: checkedAt,
+    };
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
     if (err.code === 'ENOENT') {

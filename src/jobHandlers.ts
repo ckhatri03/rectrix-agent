@@ -6,7 +6,6 @@ import os from 'node:os';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { config } from './config';
-import { updateEnvFile } from './envFile';
 import {
   aptInstall,
   aptRemove,
@@ -285,19 +284,19 @@ const queueAgentSelfUpdate = async (
     '  cd "$NEXT_APP_DIR"',
     '  npm ci',
     '  npm run build',
-    '  if [ -f "$ENV_FILE" ] || [ -w "$(dirname "$ENV_FILE")" ]; then',
-    '    if grep -q "^AGENT_VERSION=" "$ENV_FILE" 2>/dev/null; then',
-    '      sed -i "s|^AGENT_VERSION=.*$|AGENT_VERSION=$TARGET_VERSION|" "$ENV_FILE"',
-    '    else',
-    '      printf "AGENT_VERSION=%s\\n" "$TARGET_VERSION" >> "$ENV_FILE"',
-    '    fi',
-    '  fi',
     '  if [ ! -f "$SERVICE_LOG_PATH" ]; then',
     '    sudo install -m 0640 -o rectrix-agent -g rectrix-agent /dev/null "$SERVICE_LOG_PATH"',
     '  fi',
     '  rm -rf "$BACKUP_APP_DIR"',
     '  mv "$APP_DIR" "$BACKUP_APP_DIR"',
     '  mv "$NEXT_APP_DIR" "$APP_DIR"',
+    '  if [ -f "$ENV_FILE" ] || [ -w "$(dirname "$ENV_FILE")" ]; then',
+    '    if grep -q "^AGENT_VERSION=" "$ENV_FILE" 2>/dev/null; then',
+    '      sed -i "s|^AGENT_VERSION=.*$|AGENT_VERSION=$TARGET_VERSION|" "$ENV_FILE"',
+    '    else',
+    '      printf "AGENT_VERSION=%s\n" "$TARGET_VERSION" >> "$ENV_FILE"',
+    '    fi',
+    '  fi',
     '  sudo systemctl restart "$SERVICE_NAME"',
     '} >> "$LOG_PATH" 2>&1',
   ].join('\n');
@@ -308,9 +307,6 @@ const queueAgentSelfUpdate = async (
   });
   child.unref();
 
-  await updateEnvFile(config.envFilePath, { AGENT_VERSION: payload.version }).catch(
-    () => undefined,
-  );
 
   return {
     ok: true,

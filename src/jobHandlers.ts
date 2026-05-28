@@ -113,14 +113,6 @@ const brokerRuntimeSnapshotSchema = z.object({
   brokerId: z.number().int().positive(),
   serviceName: z.string().min(1),
   maxLogLines: z.number().int().positive().max(500).optional().default(20),
-  metrics: z
-    .object({
-      username: z.string().min(1),
-      password: z.string(),
-      mqttsPort: z.number().int().positive(),
-      cafile: z.string().min(1),
-    })
-    .optional(),
 });
 
 const brokerRemoveSchema = z.object({
@@ -1645,41 +1637,7 @@ const loadBrokerRuntimeSnapshot = async (
   const statusOutput = await readUnitStatus(unit, payload.maxLogLines);
   const journalOutput = await readUnitLogs(unit, payload.maxLogLines);
 
-  let sysMetricsOutput = '';
-  if (payload.metrics) {
-    if (!(await binaryExists(config.mosquittoSubBin))) {
-      throw new Error(
-        'mosquitto_sub is required to read MQTT metrics. Install the mosquitto-clients package on the broker host.',
-      );
-    }
 
-    const metricArgs = [
-      '-v',
-      '-h',
-      '127.0.0.1',
-      '-p',
-      String(payload.metrics.mqttsPort),
-      '--cafile',
-      payload.metrics.cafile,
-      '--insecure',
-      '-u',
-      payload.metrics.username,
-      '-P',
-      payload.metrics.password,
-      '-t',
-      '$SYS/broker/clients/connected',
-      '-t',
-      '$SYS/broker/messages/received',
-      '-t',
-      '$SYS/broker/messages/sent',
-      '-C',
-      '3',
-      '-W',
-      '5',
-    ];
-    const metricResult = await runRootBinary(config.mosquittoSubBin, metricArgs);
-    sysMetricsOutput = metricResult.stdout.trim();
-  }
 
   return {
     ok: true,
@@ -1690,7 +1648,6 @@ const loadBrokerRuntimeSnapshot = async (
       unitState,
       statusOutput,
       journalOutput,
-      sysMetricsOutput,
     },
   };
 };

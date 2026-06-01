@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-01
+
+- Added ACL file handling to broker apply jobs so rectrix-agent now writes Mosquitto config, password file, and ACL file together during a single broker reconcile.
+- Kept the generated broker runtime aligned with secure MQTT deployments by honoring the manager-supplied `acl_file` directive and ACL payload during apply.
+- Bumped the published agent version to `2026.05.000.022`.
+
 ## 2026-05-22
 
 - Added terminal activation failure handling so expired, revoked, and already-used activation codes stop retrying on the agent side, persist a disabled activation reason, and clear stale activation credentials from the agent env file.

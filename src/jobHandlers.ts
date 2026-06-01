@@ -96,6 +96,8 @@ const brokerApplySchema = z.object({
   serviceName: z.string().min(1),
   configPath: z.string().min(1),
   passwordFilePath: z.string().min(1),
+  aclFilePath: z.string().min(1),
+  aclContents: z.string(),
   persistenceLocation: z.string().min(1),
   unitPath: z.string().min(1),
   configContents: z.string(),
@@ -1539,6 +1541,7 @@ const applyBrokerRuntime = async (
   }
 
   await ensureManagedDirectory('/etc/mosquitto', { mode: '0755' });
+  await ensureManagedDirectory(path.dirname(payload.aclFilePath), { mode: '0755' });
   await ensureManagedDirectory(payload.persistenceLocation, {
     mode: '0755',
     owner: 'mosquitto',
@@ -1559,11 +1562,18 @@ const applyBrokerRuntime = async (
       mode: '0644',
     },
     {
+      path: payload.aclFilePath,
+      content: `${payload.aclContents.trimEnd()}\n`,
+      mode: '0640',
+    },
+    {
       path: payload.unitPath,
       content: `${payload.unitContents.trimEnd()}\n`,
       mode: '0644',
     },
   ]);
+  await chownManagedPath(payload.aclFilePath, 'mosquitto', 'mosquitto');
+  await chmodManagedPath(payload.aclFilePath, '0640');
   await systemctl('daemon-reload');
   await systemctl('enable', [unit]);
   await systemctl('restart', [unit]);

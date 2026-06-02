@@ -23,7 +23,6 @@ import {
   systemctl,
   writeManagedFiles,
 } from './system';
-import { loadState } from './stateStore';
 import { AgentJob, JobResult, ManagedFile } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -225,26 +224,9 @@ const systemCaBundleCandidates = [
   '/etc/ssl/cert.pem',
 ] as const;
 
-const resolveAgentAuthToken = async () => {
-  const persisted: Partial<{ runtimeToken: string; bootstrapToken: string }> =
-    await loadState(config.stateFile).catch(() => ({}));
-  return (
-    config.runtimeToken
-    ?? persisted.runtimeToken
-    ?? config.bootstrapToken
-    ?? persisted.bootstrapToken
-    ?? null
-  );
-};
-
 const queueAgentSelfUpdate = async (
   payload: z.infer<typeof agentUpdateSchema>,
 ): Promise<JobResult> => {
-  const authToken = await resolveAgentAuthToken();
-  if (!authToken) {
-    throw new Error('Agent update requires a persisted runtime or bootstrap token.');
-  }
-
   const appDir = path.resolve(__dirname, '..');
   const installRoot = path.dirname(appDir);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rectrix-agent-update-'));
@@ -259,7 +241,6 @@ const queueAgentSelfUpdate = async (
     'set -eu',
     `TEMP_DIR=${shellEscape(tempDir)}`,
     `ARCHIVE_URL=${shellEscape(payload.archiveUrl)}`,
-    `AUTH_TOKEN=${shellEscape(authToken)}`,
     `APP_DIR=${shellEscape(appDir)}`,
     `NEXT_APP_DIR=${shellEscape(nextAppDir)}`,
     `BACKUP_APP_DIR=${shellEscape(backupAppDir)}`,
@@ -272,7 +253,7 @@ const queueAgentSelfUpdate = async (
     '{',
     '  ARCHIVE_PATH="$TEMP_DIR/rectrix-agent.tar.gz"',
     '  mkdir -p "$STAGE_ROOT"',
-    '  curl -fsSL -H "Authorization: Bearer $AUTH_TOKEN" "$ARCHIVE_URL" -o "$ARCHIVE_PATH"',
+    '  curl -fsSL "$ARCHIVE_URL" -o "$ARCHIVE_PATH"',
     '  tar -xzf "$ARCHIVE_PATH" -C "$STAGE_ROOT"',
     '  SRC_DIR="$(find "$STAGE_ROOT" -mindepth 1 -maxdepth 1 -type d | head -n 1)"',
     '  if [ -z "$SRC_DIR" ]; then',

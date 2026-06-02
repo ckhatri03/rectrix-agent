@@ -220,6 +220,7 @@ cp -R "${src_dir}/." "${APP_DIR}/"
 pushd "${APP_DIR}" >/dev/null
 npm ci
 npm run build
+package_version="$(node -p "require('./package.json').version")"
 popd >/dev/null
 
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}" "${STATE_DIR}"
@@ -234,6 +235,8 @@ else
   chown root:"${SERVICE_USER}" "${ENV_FILE}" || true
   chmod 0660 "${ENV_FILE}" || true
 fi
+
+set_env_value "${ENV_FILE}" "AGENT_VERSION" "${package_version}"
 
 if [[ ! -f "${LOG_FILE}" ]]; then
   install -m 0640 -o "${SERVICE_USER}" -g "${SERVICE_USER}" /dev/null "${LOG_FILE}"

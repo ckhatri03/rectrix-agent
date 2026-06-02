@@ -2,6 +2,9 @@
 
 ## 2026-06-02
 
+- Forced `agent.update` to install devDependencies during self-update builds so production agents still have `tsc` available while rebuilding the downloaded release.
+- Bumped the published agent version to `2026.06.000.010`.
+
 - Included the self-update shell log tail in `agent.update` failure errors so remote update issues surface the real failing step immediately.
 - Bumped the published agent version to `2026.06.000.009`.
 

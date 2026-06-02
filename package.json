@@ -1,6 +1,6 @@
 {
   "name": "rectrix-agent",
-  "version": "2026.06.000.009",
+  "version": "2026.06.000.010",
   "description": "Rectrix edge deployment agent for Mosquitto and Telegraf hosts",
   "main": "dist/index.js",
   "scripts": {

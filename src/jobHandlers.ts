@@ -263,7 +263,7 @@ const queueAgentSelfUpdate = async (
     '  mkdir -p "$NEXT_APP_DIR"',
     '  cp -R "$SRC_DIR/." "$NEXT_APP_DIR/"',
     '  cd "$NEXT_APP_DIR"',
-    '  npm ci',
+    '  npm ci --include=dev',
     '  npm run build',
     '  if [ ! -f "$SERVICE_LOG_PATH" ]; then',
     '    sudo install -m 0640 -o rectrix-agent -g rectrix-agent /dev/null "$SERVICE_LOG_PATH"',

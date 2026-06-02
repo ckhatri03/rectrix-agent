@@ -2,6 +2,9 @@
 
 ## 2026-06-02
 
+- Fixed the generated self-update helper script to emit newline-normalization code as discrete JS lines, avoiding invalid regex/string output in the staged updater file.
+- Bumped the published agent version to `2026.06.000.013`.
+
 - Replaced the fragile inline `python3 -c` env rewrite in `agent.update` with a temp helper script plus `sudo install`, eliminating shell-quoting breakage during self-update.
 - Bumped the published agent version to `2026.06.000.012`.
 

@@ -10,6 +10,11 @@ import { ManagedFile } from './types';
 
 const execFileAsync = promisify(execFile);
 
+type CommandOptions = {
+  timeoutMs?: number;
+  description?: string;
+};
+
 const managedFileSchema = z.object({
   path: z.string().min(1),
   content: z.string(),
@@ -28,17 +33,55 @@ const asRootCommand = (binary: string, args: string[]) => {
 const runCommand = async (
   file: string,
   args: string[],
+  options?: CommandOptions,
 ): Promise<{ stdout: string; stderr: string }> => {
-  logger.debug({ file, args }, 'running command');
-  return execFileAsync(file, args, { maxBuffer: 1024 * 1024 * 5 });
+  logger.debug({ file, args, timeoutMs: options?.timeoutMs }, 'running command');
+
+  try {
+    return await execFileAsync(file, args, {
+      maxBuffer: 1024 * 1024 * 5,
+      signal: options?.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
+    });
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException & {
+      stdout?: string | Buffer;
+      stderr?: string | Buffer;
+      signal?: NodeJS.Signals;
+      killed?: boolean;
+      code?: string | number;
+    };
+    const description = options?.description ?? `${file} ${args.join(' ')}`.trim();
+    const stderr =
+      typeof err.stderr === 'string'
+        ? err.stderr.trim()
+        : Buffer.isBuffer(err.stderr)
+          ? err.stderr.toString('utf8').trim()
+          : '';
+
+    if (err.name === 'AbortError' || err.code == 'ABORT_ERR') {
+      throw new Error(
+        `Command timed out after ${options?.timeoutMs ?? 0}ms: ${description}`,
+      );
+    }
+
+    if (stderr) {
+      throw new Error(`Command failed: ${description}: ${stderr}`);
+    }
+
+    throw error;
+  }
 };
 
 export const runRootBinary = async (
   binary: string,
   args: string[],
+  options?: CommandOptions,
 ): Promise<{ stdout: string; stderr: string }> => {
   const command = asRootCommand(binary, args);
-  return runCommand(command.file, command.args);
+  return runCommand(command.file, command.args, {
+    timeoutMs: options?.timeoutMs ?? config.rootCommandTimeoutMs,
+    description: options?.description,
+  });
 };
 
 const validateUnit = (unit: string) => {

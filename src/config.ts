@@ -110,6 +110,8 @@ export const config = {
   idleJobCooldownAfterMs: asNumber('IDLE_JOB_COOLDOWN_AFTER_MS', 15 * 60 * 1000),
   idleJobPollIntervalMs: asNumber('IDLE_JOB_POLL_INTERVAL_MS', 60000),
   httpTimeoutMs: asNumber('HTTP_TIMEOUT_MS', 15000),
+  rootCommandTimeoutMs: asNumber('ROOT_COMMAND_TIMEOUT_MS', 120000),
+  dynsecCommandTimeoutMs: asNumber('DYNSEC_COMMAND_TIMEOUT_MS', 15000),
   controlPlaneMode: asEnum<ControlPlaneMode>(
     'CONTROL_PLANE_MODE',
     'http',

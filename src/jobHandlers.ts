@@ -517,7 +517,10 @@ const runDynsec = async (
     payload.dynsecAdminPassword,
     'dynsec',
     ...args,
-  ]);
+  ], {
+    timeoutMs: config.dynsecCommandTimeoutMs,
+    description: `mosquitto_ctrl dynsec ${args.join(' ')}`.trim(),
+  });
 
 const waitForDynsecReady = async (payload: z.infer<typeof brokerApplySchema>) => {
   let lastError: unknown = null;
@@ -611,9 +614,14 @@ const reconcileBrokerDynsec = async (
       }
     }
 
-    await runDynsec(payload, ['createClient', client.username]);
-    await runDynsec(payload, ['setClientPassword', client.username, client.password]);
-    await runDynsec(payload, ['addClientRole', client.username, client.roleName, '0']);
+    try {
+      await runDynsec(payload, ['createClient', client.username]);
+      await runDynsec(payload, ['setClientPassword', client.username, client.password]);
+      await runDynsec(payload, ['addClientRole', client.username, client.roleName, '0']);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Dynsec reconciliation failed for client ${client.username}: ${message}`);
+    }
   }
 };
 

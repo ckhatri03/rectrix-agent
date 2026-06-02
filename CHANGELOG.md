@@ -2,6 +2,10 @@
 
 ## 2026-06-02
 
+- Added bounded execution time for privileged broker reconcile commands so a hanging `mosquitto_ctrl` dynsec step fails the job instead of blocking the agent queue forever.
+- Added client-specific dynsec reconciliation errors so endpoint-create failures identify the exact client step that timed out or returned stderr.
+- Bumped the published agent version to `2026.06.000.014`.
+
 - Fixed the generated self-update helper script to emit newline-normalization code as discrete JS lines, avoiding invalid regex/string output in the staged updater file.
 - Bumped the published agent version to `2026.06.000.013`.
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-02
+
+- Switched broker authentication and ACL reconciliation from Mosquitto password and ACL files to Mosquitto Dynamic Security managed through `mosquitto_ctrl`.
+- Removed remaining file-based MQTT auth cleanup from the public agent install and uninstall flows, including obsolete `mosquitto_passwd` sudo access.
+- Bumped the published agent version to `2026.06.000.001`.
+
 ## 2026-06-01
 
 - Added ACL file handling to broker apply jobs so rectrix-agent now writes Mosquitto config, password file, and ACL file together during a single broker reconcile.

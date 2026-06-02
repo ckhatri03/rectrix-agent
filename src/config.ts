@@ -158,8 +158,8 @@ export const config = {
   chownBin: process.env.CHOWN_BIN ?? '/usr/bin/chown',
   chmodBin: process.env.CHMOD_BIN ?? '/usr/bin/chmod',
   python3Bin: process.env.PYTHON3_BIN ?? '/usr/bin/python3',
-  mosquittoPasswdBin:
-    process.env.MOSQUITTO_PASSWD_BIN ?? '/usr/bin/mosquitto_passwd',
+  mosquittoCtrlBin:
+    process.env.MOSQUITTO_CTRL_BIN ?? '/usr/bin/mosquitto_ctrl',
   setfaclBin: process.env.SETFACL_BIN ?? '/usr/bin/setfacl',
   capabilities: CAPABILITIES,
   hostname: os.hostname(),

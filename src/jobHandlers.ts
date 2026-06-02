@@ -77,9 +77,16 @@ const stackSchema = z.object({
   unitsToDisable: unitsSchema.optional(),
 });
 
+const brokerDynsecAclSchema = z.object({
+  permission: z.enum(['read', 'write', 'readwrite']),
+  topic: z.string().min(1),
+});
+
 const brokerCredentialSchema = z.object({
   username: z.string().min(1),
   password: z.string(),
+  roleName: z.string().min(1),
+  acls: z.array(brokerDynsecAclSchema).default([]),
 });
 
 const brokerTlsBootstrapSchema = z.object({
@@ -95,14 +102,15 @@ const brokerApplySchema = z.object({
   brokerId: z.number().int().positive(),
   serviceName: z.string().min(1),
   configPath: z.string().min(1),
-  passwordFilePath: z.string().min(1),
-  aclFilePath: z.string().min(1),
-  aclContents: z.string(),
+  dynsecConfigPath: z.string().min(1),
+  dynsecAdminUsername: z.string().min(1),
+  dynsecAdminPassword: z.string(),
+  dynsecControlPort: z.number().int().positive().max(65535),
   persistenceLocation: z.string().min(1),
   unitPath: z.string().min(1),
   configContents: z.string(),
   unitContents: z.string(),
-  mqttCredentials: z.array(brokerCredentialSchema).default([]),
+  dynsecClients: z.array(brokerCredentialSchema).default([]),
   tlsBootstrap: brokerTlsBootstrapSchema.optional(),
 });
 
@@ -121,8 +129,7 @@ const brokerRemoveSchema = z.object({
   brokerId: z.number().int().positive(),
   serviceName: z.string().min(1),
   configPath: z.string().min(1),
-  passwordFilePath: z.string().min(1),
-  aclFilePath: z.string().min(1),
+  dynsecConfigPath: z.string().min(1),
   persistenceLocation: z.string().min(1),
   unitPath: z.string().min(1),
 });
@@ -424,35 +431,179 @@ const ensureRuntimePackage = async (
   return true;
 };
 
-const syncMosquittoPasswords = async (
-  passwordFilePath: string,
-  credentials: Array<{ username: string; password: string }>,
+const DYNSEC_PLUGIN_PATH_PLACEHOLDER = '__RECTRIX_DYNSEC_PLUGIN_PATH__';
+
+const dynsecPluginCandidates = [
+  '/usr/lib/x86_64-linux-gnu/mosquitto_dynamic_security.so',
+  '/usr/lib/aarch64-linux-gnu/mosquitto_dynamic_security.so',
+  '/usr/lib/arm-linux-gnueabihf/mosquitto_dynamic_security.so',
+  '/usr/lib64/mosquitto_dynamic_security.so',
+  '/usr/lib/mosquitto_dynamic_security.so',
+] as const;
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const usesTopicPattern = (topic: string) => /[+#]/.test(topic);
+
+const parseDynsecList = (stdout: string) =>
+  stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+const resolveDynsecPluginPath = async () => {
+  for (const candidate of dynsecPluginCandidates) {
+    if (await managedPathExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `Unable to locate mosquitto_dynamic_security.so. Checked: ${dynsecPluginCandidates.join(', ')}`,
+  );
+};
+
+const renderBrokerConfigWithDynsec = async (configContents: string) =>
+  configContents.replaceAll(
+    DYNSEC_PLUGIN_PATH_PLACEHOLDER,
+    await resolveDynsecPluginPath(),
+  );
+
+const ensureDynsecConfigInitialized = async (
+  payload: z.infer<typeof brokerApplySchema>,
 ) => {
-  await ensureManagedDirectory(path.dirname(passwordFilePath), {
+  await ensureManagedDirectory(path.dirname(payload.dynsecConfigPath), {
     mode: '0750',
-    owner: 'mosquitto',
-    group: 'mosquitto',
-  });
-  await ensureManagedFile(passwordFilePath, {
-    mode: '0640',
-    owner: 'mosquitto',
+    owner: 'root',
     group: 'mosquitto',
   });
 
-  for (const credential of credentials) {
-    await runRootBinary(config.mosquittoPasswdBin, [
-      '-b',
-      passwordFilePath,
-      credential.username,
-      credential.password,
+  if (!(await managedPathExists(payload.dynsecConfigPath))) {
+    await runRootBinary(config.mosquittoCtrlBin, [
+      'dynsec',
+      'init',
+      payload.dynsecConfigPath,
+      payload.dynsecAdminUsername,
+      payload.dynsecAdminPassword,
     ]);
   }
 
-  await chownManagedPath(passwordFilePath, 'mosquitto', 'mosquitto');
-  await chmodManagedPath(passwordFilePath, '0640');
+  await chownManagedPath(payload.dynsecConfigPath, 'root', 'mosquitto');
+  await chmodManagedPath(payload.dynsecConfigPath, '0640');
+};
 
-  if (!(await managedPathExists(passwordFilePath))) {
-    throw new Error(`Mosquitto password file ${passwordFilePath} was not created.`);
+const runDynsec = async (
+  payload: z.infer<typeof brokerApplySchema>,
+  args: string[],
+) =>
+  runRootBinary(config.mosquittoCtrlBin, [
+    '-h',
+    '127.0.0.1',
+    '-p',
+    String(payload.dynsecControlPort),
+    '-u',
+    payload.dynsecAdminUsername,
+    '-P',
+    payload.dynsecAdminPassword,
+    'dynsec',
+    ...args,
+  ]);
+
+const waitForDynsecReady = async (payload: z.infer<typeof brokerApplySchema>) => {
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await runDynsec(payload, ['listClients']);
+      return;
+    } catch (error) {
+      lastError = error;
+      await delay(500);
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Timed out waiting for dynsec to become ready.');
+};
+
+const reconcileBrokerDynsec = async (
+  payload: z.infer<typeof brokerApplySchema>,
+) => {
+  await runDynsec(payload, ['setDefaultACLAccess', 'publishClientSend', 'deny']);
+  await runDynsec(payload, ['setDefaultACLAccess', 'publishClientReceive', 'deny']);
+  await runDynsec(payload, ['setDefaultACLAccess', 'subscribe', 'deny']);
+  await runDynsec(payload, ['setDefaultACLAccess', 'unsubscribe', 'deny']);
+
+  const clients = parseDynsecList((await runDynsec(payload, ['listClients'])).stdout);
+  for (const username of clients) {
+    if (username === payload.dynsecAdminUsername) {
+      continue;
+    }
+    await runDynsec(payload, ['deleteClient', username]);
+  }
+
+  const roles = parseDynsecList((await runDynsec(payload, ['listRoles'])).stdout);
+  for (const roleName of roles) {
+    if (roleName === 'admin') {
+      continue;
+    }
+    await runDynsec(payload, ['deleteRole', roleName]);
+  }
+
+  for (const client of payload.dynsecClients) {
+    await runDynsec(payload, ['createRole', client.roleName]);
+
+    for (const [index, acl] of client.acls.entries()) {
+      const priority = String(1000 - index);
+      if (acl.permission === 'write' || acl.permission === 'readwrite') {
+        await runDynsec(payload, [
+          'addRoleACL',
+          client.roleName,
+          'publishClientSend',
+          acl.topic,
+          'allow',
+          priority,
+        ]);
+      }
+
+      if (acl.permission === 'read' || acl.permission === 'readwrite') {
+        const subscribeType = usesTopicPattern(acl.topic)
+          ? 'subscribePattern'
+          : 'subscribeLiteral';
+        const unsubscribeType = usesTopicPattern(acl.topic)
+          ? 'unsubscribePattern'
+          : 'unsubscribeLiteral';
+        await runDynsec(payload, [
+          'addRoleACL',
+          client.roleName,
+          'publishClientReceive',
+          acl.topic,
+          'allow',
+          priority,
+        ]);
+        await runDynsec(payload, [
+          'addRoleACL',
+          client.roleName,
+          subscribeType,
+          acl.topic,
+          'allow',
+          priority,
+        ]);
+        await runDynsec(payload, [
+          'addRoleACL',
+          client.roleName,
+          unsubscribeType,
+          acl.topic,
+          'allow',
+          priority,
+        ]);
+      }
+    }
+
+    await runDynsec(payload, ['createClient', client.username]);
+    await runDynsec(payload, ['setClientPassword', client.username, client.password]);
+    await runDynsec(payload, ['addClientRole', client.username, client.roleName, '0']);
   }
 };
 
@@ -1536,12 +1687,11 @@ const applyBrokerRuntime = async (
   const unit = `${serviceName}.service`;
   const installedPackages: string[] = [];
 
-  if (await ensureRuntimePackage(config.mosquittoPasswdBin, 'mosquitto')) {
+  if (await ensureRuntimePackage(config.mosquittoCtrlBin, 'mosquitto')) {
     installedPackages.push('mosquitto');
   }
 
   await ensureManagedDirectory('/etc/mosquitto', { mode: '0755' });
-  await ensureManagedDirectory(path.dirname(payload.aclFilePath), { mode: '0755' });
   await ensureManagedDirectory(payload.persistenceLocation, {
     mode: '0755',
     owner: 'mosquitto',
@@ -1549,22 +1699,13 @@ const applyBrokerRuntime = async (
   });
 
   const preparedTlsFiles = await prepareBrokerTlsFiles(payload);
-
-  await syncMosquittoPasswords(
-    payload.passwordFilePath,
-    payload.mqttCredentials ?? [],
-  );
+  await ensureDynsecConfigInitialized(payload);
 
   const appliedFiles = await writeManagedFiles([
     {
       path: payload.configPath,
-      content: `${payload.configContents.trimEnd()}\n`,
+      content: `${(await renderBrokerConfigWithDynsec(payload.configContents)).trimEnd()}\n`,
       mode: '0644',
-    },
-    {
-      path: payload.aclFilePath,
-      content: `${payload.aclContents.trimEnd()}\n`,
-      mode: '0640',
     },
     {
       path: payload.unitPath,
@@ -1572,11 +1713,12 @@ const applyBrokerRuntime = async (
       mode: '0644',
     },
   ]);
-  await chownManagedPath(payload.aclFilePath, 'mosquitto', 'mosquitto');
-  await chmodManagedPath(payload.aclFilePath, '0640');
+
   await systemctl('daemon-reload');
   await systemctl('enable', [unit]);
   await systemctl('restart', [unit]);
+  await waitForDynsecReady(payload);
+  await reconcileBrokerDynsec(payload);
 
   return {
     ok: true,
@@ -1587,6 +1729,7 @@ const applyBrokerRuntime = async (
       installedPackages,
       appliedFiles,
       preparedTlsFiles,
+      dynsecConfigPath: payload.dynsecConfigPath,
       unitStates: await summarizeUnitStatesForService(serviceName),
     },
   };
@@ -1620,8 +1763,7 @@ const removeBrokerRuntime = async (
   await systemctl('disable', [unit]).catch(() => undefined);
   await removeManagedFiles([
     payload.configPath,
-    payload.passwordFilePath,
-    payload.aclFilePath,
+    payload.dynsecConfigPath,
     payload.unitPath,
   ]);
   await runRootBinary(config.rmBin, ['-rf', payload.persistenceLocation]);

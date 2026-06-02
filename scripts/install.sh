@@ -264,7 +264,7 @@ do
 done
 
 cat > "${SUDOERS_FILE}" <<EOF
-${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl, /usr/bin/apt-get, /usr/bin/certbot, /usr/bin/install, /usr/bin/rm, /usr/bin/journalctl, /usr/bin/chown, /usr/bin/chmod, /usr/bin/setfacl, /usr/bin/mosquitto_passwd, /usr/bin/mosquitto_sub, /usr/bin/python3
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl, /usr/bin/apt-get, /usr/bin/certbot, /usr/bin/install, /usr/bin/rm, /usr/bin/journalctl, /usr/bin/chown, /usr/bin/chmod, /usr/bin/setfacl, /usr/bin/mosquitto_ctrl, /usr/bin/mosquitto_sub, /usr/bin/python3
 EOF
 chmod 0440 "${SUDOERS_FILE}"
 

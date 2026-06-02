@@ -104,8 +104,7 @@ remove_workload_artifacts() {
 
     if [[ "${kind}" == "mqtt" ]]; then
       remove_if_present "/etc/mosquitto/${service_name}.conf"
-      remove_if_present "/etc/mosquitto/passwords/${service_name}.passwd"
-      remove_if_present "/etc/mosquitto/acl/${service_name}.acl"
+      remove_if_present "/etc/mosquitto/dynamic-security/${service_name}.json"
       remove_if_present "/var/lib/mosquitto/${service_name}"
     elif [[ "${kind}" == "telegraf" ]]; then
       remove_if_present "/etc/telegraf/${service_name}.conf"

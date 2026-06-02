@@ -2,6 +2,10 @@
 
 ## 2026-06-02
 
+- Fixed dynsec client creation to pass the MQTT password directly to `mosquitto_ctrl dynsec createClient -p`, avoiding the interactive password prompt that blocked endpoint creation on remote agents.
+- Removed the redundant follow-up `setClientPassword` step because the client password is now set during creation.
+- Bumped the published agent version to `2026.06.000.015`.
+
 - Added bounded execution time for privileged broker reconcile commands so a hanging `mosquitto_ctrl` dynsec step fails the job instead of blocking the agent queue forever.
 - Added client-specific dynsec reconciliation errors so endpoint-create failures identify the exact client step that timed out or returned stderr.
 - Bumped the published agent version to `2026.06.000.014`.

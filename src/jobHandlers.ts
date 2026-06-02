@@ -615,8 +615,7 @@ const reconcileBrokerDynsec = async (
     }
 
     try {
-      await runDynsec(payload, ['createClient', client.username]);
-      await runDynsec(payload, ['setClientPassword', client.username, client.password]);
+      await runDynsec(payload, ['createClient', client.username, '-p', client.password]);
       await runDynsec(payload, ['addClientRole', client.username, client.roleName, '0']);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

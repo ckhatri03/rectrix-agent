@@ -5,8 +5,7 @@
 - Moved per-broker Mosquitto dynsec state from `/etc/mosquitto/dynamic-security` into each broker's `/var/lib/mosquitto/<service>` data directory so the plugin can persist changes on remote agents without runtime write failures.
 - Fixed dynsec broker apply on remote agents by allowing plugin discovery under system library paths outside managed config roots.
 - Made DNS-01 certificate deployment skip missing broker service units so cert jobs do not fail before the broker unit exists.
-- Bumped the published agent version to `2026.06.000.003`.
-- Bumped the published agent version to `2026.06.000.004`.
+- Bumped the published agent version to `2026.06.000.005`.
 
 - Switched broker authentication and ACL reconciliation from Mosquitto password and ACL files to Mosquitto Dynamic Security managed through `mosquitto_ctrl`.
 - Removed remaining file-based MQTT auth cleanup from the public agent install and uninstall flows, including obsolete `mosquitto_passwd` sudo access.

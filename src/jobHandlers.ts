@@ -453,7 +453,7 @@ const parseDynsecList = (stdout: string) =>
 
 const resolveDynsecPluginPath = async () => {
   for (const candidate of dynsecPluginCandidates) {
-    if (await managedPathExists(candidate)) {
+    if (await binaryExists(candidate)) {
       return candidate;
     }
   }
@@ -1070,8 +1070,16 @@ const reloadBrokerUnit = async (unit: string) => {
     await systemctl('reload', [unit]);
     return 'reloaded';
   } catch {
-    await systemctl('restart', [unit]);
-    return 'restarted';
+    try {
+      await systemctl('restart', [unit]);
+      return 'restarted';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/not found/i.test(message)) {
+        return 'missing';
+      }
+      throw error;
+    }
   }
 };
 

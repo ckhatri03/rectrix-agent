@@ -1766,12 +1766,14 @@ const removeBrokerRuntime = async (
 ): Promise<JobResult> => {
   const serviceName = assertAllowedServiceName(payload.serviceName, 'mqtt');
   const unit = `${serviceName}.service`;
+  const legacyDynsecConfigPath = `/etc/mosquitto/dynamic-security/${serviceName}.json`;
 
   await systemctl('stop', [unit]).catch(() => undefined);
   await systemctl('disable', [unit]).catch(() => undefined);
   await removeManagedFiles([
     payload.configPath,
     payload.dynsecConfigPath,
+    legacyDynsecConfigPath,
     payload.unitPath,
   ]);
   await runRootBinary(config.rmBin, ['-rf', payload.persistenceLocation]);

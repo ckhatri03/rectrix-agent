@@ -455,7 +455,7 @@ const ensureDynsecConfigInitialized = async (
 ) => {
   await ensureManagedDirectory(path.dirname(payload.dynsecConfigPath), {
     mode: '0750',
-    owner: 'root',
+    owner: 'mosquitto',
     group: 'mosquitto',
   });
 

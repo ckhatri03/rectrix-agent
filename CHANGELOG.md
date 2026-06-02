@@ -2,6 +2,9 @@
 
 ## 2026-06-02
 
+- Fixed per-broker Mosquitto dynsec state directory ownership so the broker can persist dynamic-security updates after startup reconciliation.
+- Bumped the published agent version to `2026.06.000.007`.
+
 - Switched manager-driven self-update to pull the public GitHub archive so edge hosts track the published `main` release instead of the manager-local repo snapshot, and made installer upgrades always refresh `AGENT_VERSION`.
 - Bumped the published agent version to `2026.06.000.006`.
 - Moved per-broker Mosquitto dynsec state from `/etc/mosquitto/dynamic-security` into each broker's `/var/lib/mosquitto/<service>` data directory so the plugin can persist changes on remote agents without runtime write failures.

@@ -271,13 +271,7 @@ const queueAgentSelfUpdate = async (
     '  rm -rf "$BACKUP_APP_DIR"',
     '  mv "$APP_DIR" "$BACKUP_APP_DIR"',
     '  mv "$NEXT_APP_DIR" "$APP_DIR"',
-    '  if [ -f "$ENV_FILE" ] || [ -w "$(dirname "$ENV_FILE")" ]; then',
-    '    if grep -q "^AGENT_VERSION=" "$ENV_FILE" 2>/dev/null; then',
-    '      sed -i "s|^AGENT_VERSION=.*$|AGENT_VERSION=$TARGET_VERSION|" "$ENV_FILE"',
-    '    else',
-    '      printf "AGENT_VERSION=%s\n" "$TARGET_VERSION" >> "$ENV_FILE"',
-    '    fi',
-    '  fi',
+    '  sudo python3 -c "from pathlib import Path; import sys; p=Path(sys.argv[1]); v=sys.argv[2]; lines=p.read_text().splitlines() if p.exists() else []; prefix=\"AGENT_VERSION=\"; found=any(line.startswith(prefix) for line in lines); out=[f\"{prefix}{v}\" if line.startswith(prefix) else line for line in lines]; out=out if found else out+[f\"{prefix}{v}\"]; p.write_text(\"\\n\".join(out)+\"\\n\")" "$ENV_FILE" "$TARGET_VERSION"',
     '} >> "$LOG_PATH" 2>&1',
 ].join('\n');
 

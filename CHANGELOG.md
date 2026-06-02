@@ -2,6 +2,9 @@
 
 ## 2026-06-02
 
+- Made `agent.update` validate the archive download, install, and version-file swap before reporting success, so failed self-updates surface as failed jobs instead of false positives.
+- Bumped the published agent version to `2026.06.000.008`.
+
 - Fixed per-broker Mosquitto dynsec state directory ownership so the broker can persist dynamic-security updates after startup reconciliation.
 - Bumped the published agent version to `2026.06.000.007`.
 

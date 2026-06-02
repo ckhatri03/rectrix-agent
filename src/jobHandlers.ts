@@ -247,7 +247,6 @@ const queueAgentSelfUpdate = async (
     `STAGE_ROOT=${shellEscape(stageRoot)}`,
     `ENV_FILE=${shellEscape(config.envFilePath)}`,
     `TARGET_VERSION=${shellEscape(payload.version)}`,
-    `SERVICE_NAME=${shellEscape(payload.serviceName)}`,
     `LOG_PATH=${shellEscape(logPath)}`,
     'SERVICE_LOG_PATH=/var/log/rectrix-agent.log',
     '{',
@@ -279,25 +278,37 @@ const queueAgentSelfUpdate = async (
     '      printf "AGENT_VERSION=%s\n" "$TARGET_VERSION" >> "$ENV_FILE"',
     '    fi',
     '  fi',
-    '  sudo systemctl restart "$SERVICE_NAME"',
     '} >> "$LOG_PATH" 2>&1',
-  ].join('\n');
+].join('\n');
 
-  const child = spawn('/bin/sh', ['-c', script], {
+  try {
+    await execFileAsync('/bin/sh', ['-c', script]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Agent self-update failed before restart. Inspect ${logPath}. ${message}`);
+  }
+
+  const restartScript = [
+    `SERVICE_NAME=${shellEscape(payload.serviceName)}`,
+    'sleep 1',
+    'sudo systemctl restart "$SERVICE_NAME"',
+].join('\n');
+
+  const child = spawn('/bin/sh', ['-c', restartScript], {
     detached: true,
     stdio: 'ignore',
   });
   child.unref();
 
-
   return {
     ok: true,
-    summary: `Queued agent self-update to ${payload.version}`,
+    summary: `Prepared agent self-update to ${payload.version}; restart scheduled`,
     details: {
       version: payload.version,
       archiveUrl: payload.archiveUrl,
       serviceName: payload.serviceName,
       logPath,
+      restartScheduled: true,
     },
   };
 };

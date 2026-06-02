@@ -488,8 +488,8 @@ const ensureDynsecConfigInitialized = async (
     ]);
   }
 
-  await chownManagedPath(payload.dynsecConfigPath, 'root', 'mosquitto');
-  await chmodManagedPath(payload.dynsecConfigPath, '0640');
+  await chownManagedPath(payload.dynsecConfigPath, 'mosquitto', 'mosquitto');
+  await chmodManagedPath(payload.dynsecConfigPath, '0660');
 };
 
 const runDynsec = async (

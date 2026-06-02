@@ -2,6 +2,9 @@
 
 ## 2026-06-02
 
+- Included the self-update shell log tail in `agent.update` failure errors so remote update issues surface the real failing step immediately.
+- Bumped the published agent version to `2026.06.000.009`.
+
 - Made `agent.update` validate the archive download, install, and version-file swap before reporting success, so failed self-updates surface as failed jobs instead of false positives.
 - Bumped the published agent version to `2026.06.000.008`.
 

@@ -285,7 +285,13 @@ const queueAgentSelfUpdate = async (
     await execFileAsync('/bin/sh', ['-c', script]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Agent self-update failed before restart. Inspect ${logPath}. ${message}`);
+    const logTail = await fs.readFile(logPath, 'utf8').catch(() => '');
+    const summarizedLog = logTail.trim().split(/\r?\n/).slice(-40).join(' | ');
+    throw new Error(
+      summarizedLog
+        ? `Agent self-update failed before restart. Inspect ${logPath}. ${message}. Log tail: ${summarizedLog}`
+        : `Agent self-update failed before restart. Inspect ${logPath}. ${message}`,
+    );
   }
 
   const restartScript = [

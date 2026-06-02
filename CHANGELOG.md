@@ -2,6 +2,9 @@
 
 ## 2026-06-02
 
+- Replaced the fragile inline `python3 -c` env rewrite in `agent.update` with a temp helper script plus `sudo install`, eliminating shell-quoting breakage during self-update.
+- Bumped the published agent version to `2026.06.000.012`.
+
 - Replaced the self-update `AGENT_VERSION` rewrite with a sudo-backed Python file rewrite so updates no longer fail on root-owned `/etc/rectrix-agent` directories.
 - Bumped the published agent version to `2026.06.000.011`.
 

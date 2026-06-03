@@ -2,6 +2,10 @@
 
 ## 2026-06-03
 
+- Added manager-driven editable DynSec policy support so broker apply jobs now honor stored default ACL access plus per-client manual role and ACL overrides from Advanced Settings.
+- Extended dynsec snapshot verification to flag default ACL mismatches in addition to client, role, and ACL evidence gaps.
+- Bumped the published agent version to `2026.06.000.019`.
+
 - Bumped the published agent version to `2026.06.000.018` to validate manager-driven end-to-end self-update on remote hosts.
 
 - Fixed the self-update helper generator to keep newline regex and string escapes intact in the staged `update-env-version.js` script, preventing remote `agent.update` jobs from failing before restart.

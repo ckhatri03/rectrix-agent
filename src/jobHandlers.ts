@@ -88,6 +88,13 @@ const brokerCredentialSchema = z.object({
   acls: z.array(brokerDynsecAclSchema).default([]),
 });
 
+const brokerDynsecDefaultAclSchema = z.object({
+  publishClientSend: z.enum(['allow', 'deny']).default('deny'),
+  publishClientReceive: z.enum(['allow', 'deny']).default('deny'),
+  subscribe: z.enum(['allow', 'deny']).default('deny'),
+  unsubscribe: z.enum(['allow', 'deny']).default('deny'),
+});
+
 const brokerTlsBootstrapSchema = z.object({
   cafile: z.string().min(1),
   certfile: z.string().min(1),
@@ -105,6 +112,12 @@ const brokerApplySchema = z.object({
   dynsecAdminUsername: z.string().min(1),
   dynsecAdminPassword: z.string(),
   dynsecControlPort: z.number().int().positive().max(65535),
+  defaultAclAccess: brokerDynsecDefaultAclSchema.default({
+    publishClientSend: 'deny',
+    publishClientReceive: 'deny',
+    subscribe: 'deny',
+    unsubscribe: 'deny',
+  }),
   persistenceLocation: z.string().min(1),
   unitPath: z.string().min(1),
   configContents: z.string(),
@@ -130,6 +143,12 @@ const brokerDynsecSnapshotSchema = z.object({
   dynsecAdminUsername: z.string().min(1),
   dynsecAdminPassword: z.string(),
   dynsecControlPort: z.number().int().positive().max(65535),
+  defaultAclAccess: brokerDynsecDefaultAclSchema.default({
+    publishClientSend: 'deny',
+    publishClientReceive: 'deny',
+    subscribe: 'deny',
+    unsubscribe: 'deny',
+  }),
   dynsecClients: z.array(brokerCredentialSchema).default([]),
 });
 
@@ -558,10 +577,9 @@ const waitForDynsecReady = async (payload: DynsecCommandPayload) => {
 const reconcileBrokerDynsec = async (
   payload: z.infer<typeof brokerApplySchema>,
 ) => {
-  await runDynsec(payload, ['setDefaultACLAccess', 'publishClientSend', 'deny']);
-  await runDynsec(payload, ['setDefaultACLAccess', 'publishClientReceive', 'deny']);
-  await runDynsec(payload, ['setDefaultACLAccess', 'subscribe', 'deny']);
-  await runDynsec(payload, ['setDefaultACLAccess', 'unsubscribe', 'deny']);
+  for (const [aclType, access] of Object.entries(payload.defaultAclAccess)) {
+    await runDynsec(payload, ['setDefaultACLAccess', aclType, access]);
+  }
 
   const clients = parseDynsecList((await runDynsec(payload, ['listClients'])).stdout);
   for (const username of clients) {
@@ -1853,6 +1871,16 @@ const dynsecDefaultAclTypes = [
   'unsubscribe',
 ] as const;
 
+const parseDefaultAclAccessValue = (output: string) => {
+  if (output.includes(' allow')) {
+    return 'allow';
+  }
+  if (output.includes(' deny')) {
+    return 'deny';
+  }
+  return null;
+};
+
 const buildExpectedRoleAclChecks = (client: z.infer<typeof brokerCredentialSchema>) => {
   const checks: Array<{ label: string; fragments: string[] }> = [];
 
@@ -1953,6 +1981,17 @@ const loadBrokerDynsecSnapshot = async (
     }),
   );
   const defaultAclAccess = Object.fromEntries(defaultAclEntries);
+  const defaultAclMismatches = dynsecDefaultAclTypes
+    .map((aclType) => {
+      const expected = payload.defaultAclAccess[aclType];
+      const output = defaultAclAccess[aclType];
+      const actual = output?.ok ? parseDefaultAclAccessValue(output.stdout) : null;
+      if (actual === expected) {
+        return null;
+      }
+      return { aclType, expected, actual };
+    })
+    .filter(Boolean);
 
   const clientDiagnostics = await Promise.all(
     payload.dynsecClients.map(async (client) => {
@@ -2051,13 +2090,15 @@ const loadBrokerDynsecSnapshot = async (
           && missingRoles.length === 0
           && unexpectedRoles.length === 0
           && missingRoleAssignments.length === 0
-          && aclEvidenceGaps.length === 0,
+          && aclEvidenceGaps.length === 0
+          && defaultAclMismatches.length === 0,
         missingClients,
         unexpectedClients,
         missingRoles,
         unexpectedRoles,
         missingRoleAssignments,
         aclEvidenceGaps,
+        defaultAclMismatches,
       },
     },
   };

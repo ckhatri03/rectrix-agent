@@ -5,6 +5,7 @@ export type CapabilityKey =
   | 'stack.remove'
   | 'mqtt.diagnostics.snapshot'
   | 'broker.runtime.snapshot'
+  | 'dynsec.snapshot'
   | 'broker.apply'
   | 'broker.start'
   | 'broker.restart'

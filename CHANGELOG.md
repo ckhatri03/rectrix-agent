@@ -2,6 +2,9 @@
 
 ## 2026-06-02
 
+- Added a read-only `dynsec.snapshot` rectrix-agent job that runs `mosquitto_ctrl` against the broker and returns live dynsec users, roles, default ACL access, and role/client details for deeper verification.
+- Bumped the published agent version to `2026.06.000.016`.
+
 - Fixed dynsec client creation to pass the MQTT password directly to `mosquitto_ctrl dynsec createClient -p`, avoiding the interactive password prompt that blocked endpoint creation on remote agents.
 - Removed the redundant follow-up `setClientPassword` step because the client password is now set during creation.
 - Bumped the published agent version to `2026.06.000.015`.

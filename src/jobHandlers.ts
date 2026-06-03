@@ -124,6 +124,15 @@ const brokerRuntimeSnapshotSchema = z.object({
   maxLogLines: z.number().int().positive().max(500).optional().default(20),
 });
 
+const brokerDynsecSnapshotSchema = z.object({
+  brokerId: z.number().int().positive(),
+  serviceName: z.string().min(1),
+  dynsecAdminUsername: z.string().min(1),
+  dynsecAdminPassword: z.string(),
+  dynsecControlPort: z.number().int().positive().max(65535),
+  dynsecClients: z.array(brokerCredentialSchema).default([]),
+});
+
 const brokerRemoveSchema = z.object({
   brokerId: z.number().int().positive(),
   serviceName: z.string().min(1),
@@ -453,6 +462,12 @@ const dynsecPluginCandidates = [
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+type DynsecCommandPayload = {
+  dynsecControlPort: number;
+  dynsecAdminUsername: string;
+  dynsecAdminPassword: string;
+};
+
 const usesTopicPattern = (topic: string) => /[+#]/.test(topic);
 
 const parseDynsecList = (stdout: string) =>
@@ -503,7 +518,7 @@ const ensureDynsecConfigInitialized = async (
 };
 
 const runDynsec = async (
-  payload: z.infer<typeof brokerApplySchema>,
+  payload: DynsecCommandPayload,
   args: string[],
 ) =>
   runRootBinary(config.mosquittoCtrlBin, [
@@ -522,7 +537,7 @@ const runDynsec = async (
     description: `mosquitto_ctrl dynsec ${args.join(' ')}`.trim(),
   });
 
-const waitForDynsecReady = async (payload: z.infer<typeof brokerApplySchema>) => {
+const waitForDynsecReady = async (payload: DynsecCommandPayload) => {
   let lastError: unknown = null;
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -1831,6 +1846,223 @@ const loadBrokerRuntimeSnapshot = async (
   };
 };
 
+const dynsecDefaultAclTypes = [
+  'publishClientSend',
+  'publishClientReceive',
+  'subscribe',
+  'unsubscribe',
+] as const;
+
+const buildExpectedRoleAclChecks = (client: z.infer<typeof brokerCredentialSchema>) => {
+  const checks: Array<{ label: string; fragments: string[] }> = [];
+
+  client.acls.forEach((acl) => {
+    if (acl.permission === 'write' || acl.permission === 'readwrite') {
+      checks.push({
+        label: `publishClientSend allow ${acl.topic}`,
+        fragments: ['publishClientSend', acl.topic, 'allow'],
+      });
+    }
+
+    if (acl.permission === 'read' || acl.permission === 'readwrite') {
+      const subscribeType = usesTopicPattern(acl.topic)
+        ? 'subscribePattern'
+        : 'subscribeLiteral';
+      const unsubscribeType = usesTopicPattern(acl.topic)
+        ? 'unsubscribePattern'
+        : 'unsubscribeLiteral';
+      checks.push({
+        label: `publishClientReceive allow ${acl.topic}`,
+        fragments: ['publishClientReceive', acl.topic, 'allow'],
+      });
+      checks.push({
+        label: `${subscribeType} allow ${acl.topic}`,
+        fragments: [subscribeType, acl.topic, 'allow'],
+      });
+      checks.push({
+        label: `${unsubscribeType} allow ${acl.topic}`,
+        fragments: [unsubscribeType, acl.topic, 'allow'],
+      });
+    }
+  });
+
+  return checks;
+};
+
+const captureDynsecCommandOutput = async (
+  payload: DynsecCommandPayload,
+  args: string[],
+) => {
+  try {
+    const result = await runDynsec(payload, args);
+    return {
+      ok: true,
+      stdout: result.stdout.trim(),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      stdout: '',
+      error: message,
+    };
+  }
+};
+
+const loadBrokerDynsecSnapshot = async (
+  payload: z.infer<typeof brokerDynsecSnapshotSchema>,
+): Promise<JobResult> => {
+  const serviceName = assertAllowedServiceName(payload.serviceName, 'mqtt');
+  await waitForDynsecReady(payload);
+
+  const clientListOutput = await runDynsec(payload, ['listClients']);
+  const roleListOutput = await runDynsec(payload, ['listRoles']);
+  const actualClients = parseDynsecList(clientListOutput.stdout);
+  const actualRoles = parseDynsecList(roleListOutput.stdout);
+  const expectedClients = payload.dynsecClients.map((client) => ({
+    username: client.username,
+    roleName: client.roleName,
+    aclCount: client.acls.length,
+    acls: client.acls,
+  }));
+  const expectedRoleNames = payload.dynsecClients.map((client) => client.roleName);
+  const filteredActualClients = actualClients.filter(
+    (username) => username !== payload.dynsecAdminUsername,
+  );
+  const filteredActualRoles = actualRoles.filter((roleName) => roleName !== 'admin');
+  const missingClients = expectedClients
+    .map((client) => client.username)
+    .filter((username) => !filteredActualClients.includes(username));
+  const unexpectedClients = filteredActualClients.filter(
+    (username) => !expectedClients.some((client) => client.username === username),
+  );
+  const missingRoles = expectedRoleNames.filter(
+    (roleName) => !filteredActualRoles.includes(roleName),
+  );
+  const unexpectedRoles = filteredActualRoles.filter(
+    (roleName) => !expectedRoleNames.includes(roleName),
+  );
+
+  const defaultAclEntries = await Promise.all(
+    dynsecDefaultAclTypes.map(async (aclType) => {
+      const result = await captureDynsecCommandOutput(payload, [
+        'getDefaultACLAccess',
+        aclType,
+      ]);
+      return [aclType, result] as const;
+    }),
+  );
+  const defaultAclAccess = Object.fromEntries(defaultAclEntries);
+
+  const clientDiagnostics = await Promise.all(
+    payload.dynsecClients.map(async (client) => {
+      const clientResult = await captureDynsecCommandOutput(payload, [
+        'getClient',
+        client.username,
+      ]);
+      const roleResult = await captureDynsecCommandOutput(payload, [
+        'getRole',
+        client.roleName,
+      ]);
+      const roleOutput = roleResult.stdout;
+      const expectedChecks = buildExpectedRoleAclChecks(client);
+      const missingAclChecks = expectedChecks
+        .filter(
+          (check) =>
+            !roleOutput || !check.fragments.every((fragment) => roleOutput.includes(fragment)),
+        )
+        .map((check) => check.label);
+      const clientRoleAssigned =
+        clientResult.ok && clientResult.stdout.includes(client.roleName);
+
+      return {
+        username: client.username,
+        roleName: client.roleName,
+        clientPresent: filteredActualClients.includes(client.username),
+        rolePresent: filteredActualRoles.includes(client.roleName),
+        clientRoleAssigned,
+        missingAclChecks,
+        clientOutput: clientResult.stdout,
+        clientError: clientResult.ok ? null : clientResult.error ?? 'Unknown error',
+        roleOutput,
+        roleError: roleResult.ok ? null : roleResult.error ?? 'Unknown error',
+      };
+    }),
+  );
+
+  const roleDiagnostics = await Promise.all(
+    filteredActualRoles.map(async (roleName) => {
+      const roleResult = await captureDynsecCommandOutput(payload, ['getRole', roleName]);
+      return {
+        roleName,
+        output: roleResult.stdout,
+        error: roleResult.ok ? null : roleResult.error ?? 'Unknown error',
+      };
+    }),
+  );
+
+  const unexpectedClientDiagnostics = await Promise.all(
+    unexpectedClients.map(async (username) => {
+      const clientResult = await captureDynsecCommandOutput(payload, ['getClient', username]);
+      return {
+        username,
+        output: clientResult.stdout,
+        error: clientResult.ok ? null : clientResult.error ?? 'Unknown error',
+      };
+    }),
+  );
+
+  const missingRoleAssignments = clientDiagnostics
+    .filter((entry) => entry.clientPresent && entry.rolePresent && !entry.clientRoleAssigned)
+    .map((entry) => ({ username: entry.username, roleName: entry.roleName }));
+  const aclEvidenceGaps = clientDiagnostics
+    .filter((entry) => entry.missingAclChecks.length > 0)
+    .map((entry) => ({
+      roleName: entry.roleName,
+      username: entry.username,
+      missingChecks: entry.missingAclChecks,
+    }));
+
+  return {
+    ok: true,
+    summary: `Dynsec snapshot for ${serviceName}`,
+    details: {
+      brokerId: payload.brokerId,
+      serviceName,
+      checkedAt: new Date().toISOString(),
+      expected: {
+        adminUsername: payload.dynsecAdminUsername,
+        clientCount: expectedClients.length,
+        roleCount: expectedRoleNames.length,
+        clients: expectedClients,
+      },
+      actual: {
+        clients: filteredActualClients,
+        roles: filteredActualRoles,
+        clientDiagnostics,
+        roleDiagnostics,
+        unexpectedClientDiagnostics,
+      },
+      defaultAclAccess,
+      verification: {
+        ok:
+          missingClients.length === 0
+          && unexpectedClients.length === 0
+          && missingRoles.length === 0
+          && unexpectedRoles.length === 0
+          && missingRoleAssignments.length === 0
+          && aclEvidenceGaps.length === 0,
+        missingClients,
+        unexpectedClients,
+        missingRoles,
+        unexpectedRoles,
+        missingRoleAssignments,
+        aclEvidenceGaps,
+      },
+    },
+  };
+};
+
 const applyTelegrafRuntime = async (
   payload: z.infer<typeof telegrafRuntimeApplySchema>,
 ): Promise<JobResult> => {
@@ -2123,6 +2355,10 @@ export const runJob = async (job: AgentJob): Promise<JobResult> => {
     case 'broker.runtime.snapshot':
       return loadBrokerRuntimeSnapshot(
         brokerRuntimeSnapshotSchema.parse(job.payload),
+      );
+    case 'dynsec.snapshot':
+      return loadBrokerDynsecSnapshot(
+        brokerDynsecSnapshotSchema.parse(job.payload),
       );
     case 'broker.apply':
       return applyBrokerRuntime(brokerApplySchema.parse(job.payload));

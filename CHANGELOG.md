@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-03
+
+- Fixed the self-update helper generator to keep newline regex and string escapes intact in the staged `update-env-version.js` script, preventing remote `agent.update` jobs from failing before restart.
+- Bumped the published agent version to `2026.06.000.017`.
+
 ## 2026-06-02
 
 - Added a read-only `dynsec.snapshot` rectrix-agent job that runs `mosquitto_ctrl` against the broker and returns live dynsec users, roles, default ACL access, and role/client details for deeper verification.

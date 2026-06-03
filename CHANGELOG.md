@@ -2,6 +2,8 @@
 
 ## 2026-06-03
 
+- Bumped the published agent version to `2026.06.000.018` to validate manager-driven end-to-end self-update on remote hosts.
+
 - Fixed the self-update helper generator to keep newline regex and string escapes intact in the staged `update-env-version.js` script, preventing remote `agent.update` jobs from failing before restart.
 - Bumped the published agent version to `2026.06.000.017`.
 

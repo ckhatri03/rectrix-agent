@@ -24,6 +24,7 @@ import {
   writeManagedFiles,
 } from './system';
 import { AgentJob, JobResult, ManagedFile } from './types';
+import { prepareTimescaleSecretStore } from './telegrafSecretStore';
 
 const execFileAsync = promisify(execFile);
 
@@ -176,15 +177,34 @@ const letsEncryptDnsDeploySchema = z.object({
   brokerServices: z.array(z.string().min(1)).default([]),
 });
 
-const telegrafRuntimeApplySchema = z.object({
+const telegrafRuntimeSecretFieldsSchema = z.object({
   brokerId: z.number().int().positive(),
   serviceName: z.string().min(1),
   configPath: z.string().min(1),
+  timescaleAuthMode: z.string().optional(),
+  timescaleKeyringEntry: z.string().min(1).nullable().optional(),
+  timescaleSecretStoreId: z.string().min(1).nullable().optional(),
+  timescaleSecretKey: z.string().min(1).nullable().optional(),
+  timescaleSecretConnection: z.string().min(1).nullable().optional(),
+  timescaleUsername: z.string().min(1).nullable().optional(),
+  timescalePassword: z.string().nullable().optional(),
+  timescaleHost: z.string().min(1).nullable().optional(),
+  timescalePort: z.number().int().positive().max(65535).nullable().optional(),
+  timescaleDatabase: z.string().min(1).nullable().optional(),
+  timescaleSslMode: z.string().min(1).nullable().optional(),
+  timescaleConnectionTemplate: z.string().min(1).nullable().optional(),
+  timescaleConnectionString: z.string().min(1).nullable().optional(),
+  restartService: z.boolean().optional().default(true),
+});
+
+const telegrafRuntimeApplySchema = telegrafRuntimeSecretFieldsSchema.extend({
   unitPath: z.string().min(1),
   configContents: z.string(),
   unitContents: z.string(),
   tlsAccessPaths: z.array(z.string().min(1)).optional().default([]),
 });
+
+const telegrafRuntimeReseedSchema = telegrafRuntimeSecretFieldsSchema;
 
 const telegrafRuntimeSnapshotSchema = z.object({
   brokerId: z.number().int().positive(),
@@ -2104,6 +2124,39 @@ const loadBrokerDynsecSnapshot = async (
   };
 };
 
+const reseedTelegrafSecretStore = async (
+  payload: z.infer<typeof telegrafRuntimeReseedSchema>,
+): Promise<JobResult> => {
+  const serviceName = assertAllowedServiceName(payload.serviceName, 'telegraf');
+  const unit = `${serviceName}.service`;
+
+  const timescaleAuth = await prepareTimescaleSecretStore({
+    configPath: payload.configPath,
+    timescaleAuthMode: payload.timescaleAuthMode,
+    timescaleKeyringEntry: payload.timescaleKeyringEntry,
+    timescaleSecretStoreId: payload.timescaleSecretStoreId,
+    timescaleSecretKey: payload.timescaleSecretKey,
+    timescaleSecretConnection: payload.timescaleSecretConnection,
+    timescaleConnectionString: payload.timescaleConnectionString,
+    timescalePassword: payload.timescalePassword,
+  });
+
+  if (payload.restartService ?? true) {
+    await systemctl('restart', [unit]);
+  }
+
+  return {
+    ok: true,
+    summary: `Reseeded telegraf secrets for ${serviceName}`,
+    details: {
+      brokerId: payload.brokerId,
+      serviceName,
+      timescaleAuth,
+      unitStates: await summarizeUnitStatesForService(serviceName),
+    },
+  };
+};
+
 const applyTelegrafRuntime = async (
   payload: z.infer<typeof telegrafRuntimeApplySchema>,
 ): Promise<JobResult> => {
@@ -2136,6 +2189,21 @@ const applyTelegrafRuntime = async (
   await grantTelegrafTlsAccess(payload.tlsAccessPaths ?? []);
   await systemctl('daemon-reload');
   await systemctl('enable', [unit]);
+
+  const reseedResult = await reseedTelegrafSecretStore({
+    brokerId: payload.brokerId,
+    serviceName,
+    configPath: payload.configPath,
+    timescaleAuthMode: payload.timescaleAuthMode,
+    timescaleKeyringEntry: payload.timescaleKeyringEntry,
+    timescaleSecretStoreId: payload.timescaleSecretStoreId,
+    timescaleSecretKey: payload.timescaleSecretKey,
+    timescaleSecretConnection: payload.timescaleSecretConnection,
+    timescaleConnectionString: payload.timescaleConnectionString,
+    timescalePassword: payload.timescalePassword,
+    restartService: false,
+  });
+
   await systemctl('restart', [unit]);
 
   return {
@@ -2146,6 +2214,7 @@ const applyTelegrafRuntime = async (
       serviceName,
       installedPackages,
       appliedFiles,
+      timescaleAuth: reseedResult.details?.timescaleAuth,
       unitStates: await summarizeUnitStatesForService(serviceName),
     },
   };
@@ -2431,6 +2500,10 @@ export const runJob = async (job: AgentJob): Promise<JobResult> => {
         );
       }
       return applyFiles(fileApplySchema.parse(job.payload), ['telegraf']);
+    case 'telegraf.reseed-secrets':
+      return reseedTelegrafSecretStore(
+        telegrafRuntimeReseedSchema.parse(job.payload),
+      );
     case 'telegraf.remove':
       if (
         job.payload &&

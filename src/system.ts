@@ -13,6 +13,7 @@ const execFileAsync = promisify(execFile);
 type CommandOptions = {
   timeoutMs?: number;
   description?: string;
+  env?: NodeJS.ProcessEnv;
 };
 
 const managedFileSchema = z.object({
@@ -23,7 +24,8 @@ const managedFileSchema = z.object({
 
 const packageSchema = z.enum(['mosquitto', 'telegraf']);
 
-const influxRepoListPath = '/etc/apt/sources.list.d/influxdata.list';
+const influxRepoListPath = '/etc/apt/sources.list.d/rectrix-influxdata.list';
+const legacyInfluxRepoListPath = '/etc/apt/sources.list.d/influxdata.list';
 const influxRepoKeyringPath = '/etc/apt/keyrings/influxdata-archive.gpg';
 
 const asRootCommand = (binary: string, args: string[]) => {
@@ -42,6 +44,7 @@ const runCommand = async (
 
   try {
     return await execFileAsync(file, args, {
+      env: options?.env ? { ...process.env, ...options.env } : process.env,
       maxBuffer: 1024 * 1024 * 5,
       signal: options?.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
     });
@@ -260,6 +263,12 @@ export const systemctl = async (
   return stdout.trim();
 };
 
+const aptEnv = {
+  DEBIAN_FRONTEND: 'noninteractive',
+  NEEDRESTART_MODE: 'a',
+  UCF_FORCE_CONFFNEW: '1',
+};
+
 const readOsReleaseCodename = async () => {
   try {
     const raw = await fs.readFile('/etc/os-release', 'utf8');
@@ -291,6 +300,7 @@ const ensureTelegrafAptRepository = async () => {
   ]);
   await runCommand(prereqCommand.file, prereqCommand.args, {
     description: `${config.aptGetBin} install -y curl gnupg ca-certificates lsb-release`,
+    env: aptEnv,
   });
 
   const detectedCodename = await readOsReleaseCodename();
@@ -343,6 +353,12 @@ const ensureTelegrafAptRepository = async () => {
     ], {
       description: 'install InfluxData telegraf repository keyring',
     });
+    await runRootBinary(config.rmBin, [
+      '-f',
+      legacyInfluxRepoListPath,
+    ], {
+      description: 'remove legacy InfluxData telegraf apt source list',
+    });
 
     const repoLine = `deb [signed-by=${influxRepoKeyringPath} arch=${arch}] https://repos.influxdata.com/ubuntu ${targetCodename} stable\n`;
     await fs.writeFile(repoListTempPath, repoLine, 'utf8');
@@ -375,12 +391,15 @@ export const aptInstall = async (
   const command = asRootCommand(config.aptGetBin, [
     'update',
   ]);
-  await runCommand(command.file, command.args);
+  await runCommand(command.file, command.args, {
+    env: aptEnv,
+  });
 
   if (validated.includes('telegraf')) {
     await ensureTelegrafAptRepository();
     await runCommand(command.file, command.args, {
       description: `${config.aptGetBin} update (after telegraf repo)`,
+      env: aptEnv,
     });
   }
   const installCommand = asRootCommand(config.aptGetBin, [
@@ -388,7 +407,9 @@ export const aptInstall = async (
     '-y',
     ...resolved,
   ]);
-  await runCommand(installCommand.file, installCommand.args);
+  await runCommand(installCommand.file, installCommand.args, {
+    env: aptEnv,
+  });
   return validated;
 };
 
@@ -402,7 +423,9 @@ export const aptRemove = async (packages: string[]): Promise<string[]> => {
     '-y',
     ...validated,
   ]);
-  await runCommand(command.file, command.args);
+  await runCommand(command.file, command.args, {
+    env: aptEnv,
+  });
   return validated;
 };
 

@@ -22,14 +22,13 @@ type TimescaleSecretResult = {
 
 const TELEGRAF_BIN = '/usr/bin/telegraf';
 
-const runCommandWithInput = (
+const runCommand = (
   command: string,
   args: string[],
-  input: string,
 ): Promise<void> =>
   new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     let stderr = '';
@@ -56,13 +55,10 @@ const runCommandWithInput = (
         new Error(
           stderr.trim()
             || stdout.trim()
-            || `Command ${command} exited with code ${code ?? 'unknown'}`,
+            || `Command ${command} exited with code ${code ?? 'unknown'}` ,
         ),
       );
     });
-
-    child.stdin.write(`${input}\n`);
-    child.stdin.end();
   });
 
 const runTelegrafSecretSetAsUser = async (
@@ -75,25 +71,22 @@ const runTelegrafSecretSetAsUser = async (
     'import os, pwd, subprocess, sys',
     "username = 'telegraf'",
     'pw = pwd.getpwnam(username)',
-    'secret = sys.stdin.read()',
-    'if secret.endswith(\"\\n\"):',
-    '    secret = secret[:-1]',
     'def demote():',
     '    os.initgroups(username, pw.pw_gid)',
     '    os.setgid(pw.pw_gid)',
     '    os.setuid(pw.pw_uid)',
-    'cmd = [sys.argv[1], "--config", sys.argv[2], "secrets", "set", sys.argv[3], sys.argv[4]]',
-    'completed = subprocess.run(cmd, input=f\"{secret}\\n\", text=True, preexec_fn=demote)',
+    'cmd = [sys.argv[1], "--config", sys.argv[2], "secrets", "set", sys.argv[3], sys.argv[4], sys.argv[5]]',
+    'completed = subprocess.run(cmd, text=True, preexec_fn=demote)',
     'raise SystemExit(completed.returncode)',
   ].join('\n');
 
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
   const command = isRoot ? config.python3Bin : config.sudoBin;
   const args = isRoot
-    ? ['-c', pythonScript, TELEGRAF_BIN, configPath, storeId, secretKey]
-    : [config.python3Bin, '-c', pythonScript, TELEGRAF_BIN, configPath, storeId, secretKey];
+    ? ['-c', pythonScript, TELEGRAF_BIN, configPath, storeId, secretKey, secretValue]
+    : [config.python3Bin, '-c', pythonScript, TELEGRAF_BIN, configPath, storeId, secretKey, secretValue];
 
-  await runCommandWithInput(command, args, secretValue);
+  await runCommand(command, args);
 };
 
 const resolveSecretValue = (payload: TimescaleSecretPayload) => {

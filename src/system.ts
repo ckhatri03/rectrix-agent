@@ -23,6 +23,9 @@ const managedFileSchema = z.object({
 
 const packageSchema = z.enum(['mosquitto', 'telegraf']);
 
+const influxRepoListPath = '/etc/apt/sources.list.d/influxdata.list';
+const influxRepoKeyringPath = '/etc/apt/keyrings/influxdata-archive.gpg';
+
 const asRootCommand = (binary: string, args: string[]) => {
   if (typeof process.getuid === 'function' && process.getuid() === 0) {
     return { file: binary, args };
@@ -257,6 +260,47 @@ export const systemctl = async (
   return stdout.trim();
 };
 
+const ensureTelegrafAptRepository = async () => {
+  const prereqCommand = asRootCommand(config.aptGetBin, [
+    'install',
+    '-y',
+    'curl',
+    'gnupg',
+    'ca-certificates',
+    'lsb-release',
+  ]);
+  await runCommand(prereqCommand.file, prereqCommand.args, {
+    description: `${config.aptGetBin} install -y curl gnupg ca-certificates lsb-release`,
+  });
+
+  const codenameCommand = asRootCommand('/bin/sh', [
+    '-lc',
+    '. /etc/os-release && printf %s "${VERSION_CODENAME:-}"',
+  ]);
+  const { stdout: rawCodename } = await runCommand(
+    codenameCommand.file,
+    codenameCommand.args,
+    { description: 'detect ubuntu codename for telegraf repo' },
+  );
+  const detectedCodename = rawCodename.trim();
+  const targetCodename =
+    detectedCodename === 'noble' || !detectedCodename ? 'jammy' : detectedCodename;
+
+  const repoCommand = asRootCommand('/bin/sh', [
+    '-lc',
+    [
+      'set -eu',
+      'install -m 0755 -d /etc/apt/keyrings',
+      `curl -fsSL https://repos.influxdata.com/influxdata-archive.key | gpg --dearmor --yes -o ${influxRepoKeyringPath}`,
+      `chmod a+r ${influxRepoKeyringPath}`,
+      `printf "deb [signed-by=${influxRepoKeyringPath} arch=$(dpkg --print-architecture)] https://repos.influxdata.com/ubuntu ${targetCodename} stable\n" > ${influxRepoListPath}`,
+    ].join(' && '),
+  ]);
+  await runCommand(repoCommand.file, repoCommand.args, {
+    description: 'configure InfluxData telegraf apt repository',
+  });
+};
+
 export const aptInstall = async (
   packages: string[],
   versions?: Record<string, string>,
@@ -273,6 +317,13 @@ export const aptInstall = async (
     'update',
   ]);
   await runCommand(command.file, command.args);
+
+  if (validated.includes('telegraf')) {
+    await ensureTelegrafAptRepository();
+    await runCommand(command.file, command.args, {
+      description: `${config.aptGetBin} update (after telegraf repo)`,
+    });
+  }
   const installCommand = asRootCommand(config.aptGetBin, [
     'install',
     '-y',

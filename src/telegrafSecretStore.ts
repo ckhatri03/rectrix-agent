@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { config } from './config';
 
 type TimescaleSecretPayload = {
   configPath: string;
@@ -20,8 +21,6 @@ type TimescaleSecretResult = {
 };
 
 const TELEGRAF_BIN = '/usr/bin/telegraf';
-
-const shellEscape = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
 
 const runCommandWithInput = (
   command: string,
@@ -66,42 +65,35 @@ const runCommandWithInput = (
     child.stdin.end();
   });
 
-const setSecretWithRunuser = async (
+const runTelegrafSecretSetAsUser = async (
   configPath: string,
   storeId: string,
   secretKey: string,
   secretValue: string,
 ) => {
-  await runCommandWithInput(
-    'runuser',
-    [
-      '-u',
-      'telegraf',
-      '--',
-      TELEGRAF_BIN,
-      '--config',
-      configPath,
-      'secrets',
-      'set',
-      storeId,
-      secretKey,
-    ],
-    secretValue,
-  );
-};
+  const pythonScript = [
+    'import os, pwd, subprocess, sys',
+    "username = 'telegraf'",
+    'pw = pwd.getpwnam(username)',
+    'secret = sys.stdin.read()',
+    'if secret.endswith("\n"):',
+    '    secret = secret[:-1]',
+    'def demote():',
+    '    os.initgroups(username, pw.pw_gid)',
+    '    os.setgid(pw.pw_gid)',
+    '    os.setuid(pw.pw_uid)',
+    'cmd = [sys.argv[1], "--config", sys.argv[2], "secrets", "set", sys.argv[3], sys.argv[4]]',
+    'completed = subprocess.run(cmd, input=f"{secret}\n", text=True, preexec_fn=demote)',
+    'raise SystemExit(completed.returncode)',
+  ].join('\n');
 
-const setSecretWithSu = async (
-  configPath: string,
-  storeId: string,
-  secretKey: string,
-  secretValue: string,
-) => {
-  const command = `${shellEscape(TELEGRAF_BIN)} --config ${shellEscape(configPath)} secrets set ${shellEscape(storeId)} ${shellEscape(secretKey)}`;
-  await runCommandWithInput(
-    'su',
-    ['-s', '/bin/sh', 'telegraf', '-c', command],
-    secretValue,
-  );
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const command = isRoot ? config.python3Bin : config.sudoBin;
+  const args = isRoot
+    ? ['-c', pythonScript, TELEGRAF_BIN, configPath, storeId, secretKey]
+    : [config.python3Bin, '-c', pythonScript, TELEGRAF_BIN, configPath, storeId, secretKey];
+
+  await runCommandWithInput(command, args, secretValue);
 };
 
 const resolveSecretValue = (payload: TimescaleSecretPayload) => {
@@ -156,15 +148,12 @@ export const prepareTimescaleSecretStore = async (
     throw new Error('Telegraf keyring payload is missing the Timescale connection secret.');
   }
 
-  try {
-    await setSecretWithRunuser(payload.configPath, secretStoreId, secretKey, secretValue);
-  } catch (error) {
-    const maybeErr = error as NodeJS.ErrnoException;
-    if (maybeErr?.code !== 'ENOENT') {
-      throw error;
-    }
-    await setSecretWithSu(payload.configPath, secretStoreId, secretKey, secretValue);
-  }
+  await runTelegrafSecretSetAsUser(
+    payload.configPath,
+    secretStoreId,
+    secretKey,
+    secretValue,
+  );
 
   return {
     authMode,

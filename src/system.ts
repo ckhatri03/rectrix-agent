@@ -22,7 +22,7 @@ const managedFileSchema = z.object({
   mode: z.string().regex(/^0[0-7]{3}$/).optional(),
 });
 
-const packageSchema = z.enum(['mosquitto', 'telegraf']);
+const packageSchema = z.enum(['acl', 'mosquitto', 'telegraf']);
 
 const influxRepoListPath = '/etc/apt/sources.list.d/rectrix-influxdata.list';
 const legacyInfluxRepoListPath = '/etc/apt/sources.list.d/influxdata.list';

@@ -480,7 +480,7 @@ const summarizeUnitStatesForService = async (serviceName: string) => {
 
 const ensureRuntimePackage = async (
   binaryPath: string,
-  packageName: 'mosquitto' | 'telegraf',
+  packageName: 'acl' | 'mosquitto' | 'telegraf',
 ) => {
   if (await binaryExists(binaryPath)) {
     return false;
@@ -2166,6 +2166,9 @@ const applyTelegrafRuntime = async (
 
   if (await ensureRuntimePackage('/usr/bin/telegraf', 'telegraf')) {
     installedPackages.push('telegraf');
+  }
+  if ((payload.tlsAccessPaths ?? []).length > 0 && await ensureRuntimePackage(config.setfaclBin, 'acl')) {
+    installedPackages.push('acl');
   }
 
   await ensureManagedDirectory('/etc/telegraf', { mode: '0755' });

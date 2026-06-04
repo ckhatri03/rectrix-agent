@@ -76,14 +76,14 @@ const runTelegrafSecretSetAsUser = async (
     "username = 'telegraf'",
     'pw = pwd.getpwnam(username)',
     'secret = sys.stdin.read()',
-    'if secret.endswith("\n"):',
+    'if secret.endswith(\"\\n\"):',
     '    secret = secret[:-1]',
     'def demote():',
     '    os.initgroups(username, pw.pw_gid)',
     '    os.setgid(pw.pw_gid)',
     '    os.setuid(pw.pw_uid)',
     'cmd = [sys.argv[1], "--config", sys.argv[2], "secrets", "set", sys.argv[3], sys.argv[4]]',
-    'completed = subprocess.run(cmd, input=f"{secret}\n", text=True, preexec_fn=demote)',
+    'completed = subprocess.run(cmd, input=f\"{secret}\\n\", text=True, preexec_fn=demote)',
     'raise SystemExit(completed.returncode)',
   ].join('\n');
 

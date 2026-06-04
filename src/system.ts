@@ -260,6 +260,26 @@ export const systemctl = async (
   return stdout.trim();
 };
 
+const readOsReleaseCodename = async () => {
+  try {
+    const raw = await fs.readFile('/etc/os-release', 'utf8');
+    const fields = Object.fromEntries(
+      raw
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [key, ...rest] = line.split('=');
+          return [key, rest.join('=').replace(/^"|"$/g, '')];
+        }),
+    );
+    return typeof fields.VERSION_CODENAME === 'string'
+      ? fields.VERSION_CODENAME.trim()
+      : '';
+  } catch {
+    return '';
+  }
+};
+
 const ensureTelegrafAptRepository = async () => {
   const prereqCommand = asRootCommand(config.aptGetBin, [
     'install',
@@ -273,32 +293,71 @@ const ensureTelegrafAptRepository = async () => {
     description: `${config.aptGetBin} install -y curl gnupg ca-certificates lsb-release`,
   });
 
-  const codenameCommand = asRootCommand('/bin/sh', [
-    '-lc',
-    '. /etc/os-release && printf %s "${VERSION_CODENAME:-}"',
-  ]);
-  const { stdout: rawCodename } = await runCommand(
-    codenameCommand.file,
-    codenameCommand.args,
-    { description: 'detect ubuntu codename for telegraf repo' },
-  );
-  const detectedCodename = rawCodename.trim();
+  const detectedCodename = await readOsReleaseCodename();
   const targetCodename =
     detectedCodename === 'noble' || !detectedCodename ? 'jammy' : detectedCodename;
 
-  const repoCommand = asRootCommand('/bin/sh', [
-    '-lc',
-    [
-      'set -eu',
-      'install -m 0755 -d /etc/apt/keyrings',
-      `curl -fsSL https://repos.influxdata.com/influxdata-archive.key | gpg --dearmor --yes -o ${influxRepoKeyringPath}`,
-      `chmod a+r ${influxRepoKeyringPath}`,
-      `printf "deb [signed-by=${influxRepoKeyringPath} arch=$(dpkg --print-architecture)] https://repos.influxdata.com/ubuntu ${targetCodename} stable\n" > ${influxRepoListPath}`,
-    ].join(' && '),
-  ]);
-  await runCommand(repoCommand.file, repoCommand.args, {
-    description: 'configure InfluxData telegraf apt repository',
+  const { stdout: archStdout } = await runCommand('/usr/bin/dpkg', ['--print-architecture'], {
+    description: 'detect dpkg architecture for telegraf repo',
   });
+  const arch = archStdout.trim() || 'amd64';
+
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rectrix-telegraf-repo-'));
+  const keySourcePath = path.join(tempRoot, 'influxdata-archive.key');
+  const keyringTempPath = path.join(tempRoot, 'influxdata-archive.gpg');
+  const repoListTempPath = path.join(tempRoot, 'influxdata.list');
+
+  try {
+    const { stdout: keyContents } = await runCommand('/usr/bin/curl', [
+      '-fsSL',
+      'https://repos.influxdata.com/influxdata-archive.key',
+    ], {
+      description: 'download InfluxData telegraf repository key',
+    });
+    await fs.writeFile(keySourcePath, keyContents, 'utf8');
+
+    await runCommand('/usr/bin/gpg', [
+      '--dearmor',
+      '--yes',
+      '--output',
+      keyringTempPath,
+      keySourcePath,
+    ], {
+      description: 'convert InfluxData repository key to gpg keyring',
+    });
+
+    await runRootBinary(config.installBin, [
+      '-d',
+      '-m',
+      '0755',
+      '/etc/apt/keyrings',
+    ], {
+      description: 'create /etc/apt/keyrings',
+    });
+    await runRootBinary(config.installBin, [
+      '-D',
+      '-m',
+      '0644',
+      keyringTempPath,
+      influxRepoKeyringPath,
+    ], {
+      description: 'install InfluxData telegraf repository keyring',
+    });
+
+    const repoLine = `deb [signed-by=${influxRepoKeyringPath} arch=${arch}] https://repos.influxdata.com/ubuntu ${targetCodename} stable\n`;
+    await fs.writeFile(repoListTempPath, repoLine, 'utf8');
+    await runRootBinary(config.installBin, [
+      '-D',
+      '-m',
+      '0644',
+      repoListTempPath,
+      influxRepoListPath,
+    ], {
+      description: 'install InfluxData telegraf apt source list',
+    });
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
 };
 
 export const aptInstall = async (

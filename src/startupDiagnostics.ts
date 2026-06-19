@@ -37,6 +37,28 @@ const loadPersistedStateSummary = async (stateFilePath: string) => {
       hasWssUrl: hasValue(
         typeof parsed.wssUrl === 'string' ? parsed.wssUrl : undefined,
       ),
+      hasIotEndpoint: hasValue(
+        typeof parsed.iotEndpoint === 'string' ? parsed.iotEndpoint : undefined,
+      ),
+      hasIotCertPath: hasValue(
+        typeof parsed.iotCertPath === 'string' ? parsed.iotCertPath : undefined,
+      ),
+      hasIotKeyPath: hasValue(
+        typeof parsed.iotKeyPath === 'string' ? parsed.iotKeyPath : undefined,
+      ),
+      hasIotClientId: hasValue(
+        typeof parsed.iotClientId === 'string' ? parsed.iotClientId : undefined,
+      ),
+      hasIotThingName: hasValue(
+        typeof parsed.iotThingName === 'string' ? parsed.iotThingName : undefined,
+      ),
+      hasIotProvisioningTemplateName: hasValue(
+        typeof parsed.iotProvisioningTemplateName === 'string'
+          ? parsed.iotProvisioningTemplateName
+          : undefined,
+      ),
+      iotTransportMode:
+        typeof parsed.iotTransportMode === 'string' ? parsed.iotTransportMode : undefined,
     };
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
@@ -48,6 +70,13 @@ const loadPersistedStateSummary = async (stateFilePath: string) => {
         hasBootstrapToken: false,
         hasManagerApiUrl: false,
         hasWssUrl: false,
+        hasIotEndpoint: false,
+        hasIotCertPath: false,
+        hasIotKeyPath: false,
+        hasIotClientId: false,
+        hasIotThingName: false,
+        hasIotProvisioningTemplateName: false,
+        iotTransportMode: undefined,
       };
     }
     throw new StartupConfigurationError('Failed to read persisted agent state', {
@@ -82,6 +111,20 @@ export const validateStartupEnvironment = async (): Promise<void> => {
 
   const managerApiUrl = process.env.MANAGER_API_URL ?? parsedEnv.MANAGER_API_URL;
   const wssUrl = process.env.WSS_URL ?? parsedEnv.WSS_URL;
+  const iotEndpoint = process.env.AWS_IOT_ENDPOINT ?? parsedEnv.AWS_IOT_ENDPOINT;
+  const iotCertPath = process.env.AWS_IOT_CERT_PATH ?? parsedEnv.AWS_IOT_CERT_PATH;
+  const iotKeyPath = process.env.AWS_IOT_KEY_PATH ?? parsedEnv.AWS_IOT_KEY_PATH;
+  const iotClientId = process.env.AWS_IOT_CLIENT_ID ?? parsedEnv.AWS_IOT_CLIENT_ID;
+  const iotThingName = process.env.AWS_IOT_THING_NAME ?? parsedEnv.AWS_IOT_THING_NAME;
+  const iotProvisioningTemplateName =
+    process.env.AWS_IOT_PROVISIONING_TEMPLATE_NAME
+    ?? parsedEnv.AWS_IOT_PROVISIONING_TEMPLATE_NAME;
+  const iotTransportMode =
+    process.env.AWS_IOT_TRANSPORT_MODE
+    ?? parsedEnv.AWS_IOT_TRANSPORT_MODE
+    ?? persistedState.iotTransportMode;
+  const controlPlaneMode =
+    (process.env.CONTROL_PLANE_MODE ?? parsedEnv.CONTROL_PLANE_MODE ?? '').trim().toLowerCase();
 
   const activationCode = process.env.AGENT_ACTIVATION_CODE ?? parsedEnv.AGENT_ACTIVATION_CODE;
   if (hasValue(activationCode) && !/^[A-Z0-9]{24}$/.test(activationCode!.trim().toUpperCase())) {
@@ -106,36 +149,66 @@ export const validateStartupEnvironment = async (): Promise<void> => {
   const hasRuntimePath = hasRuntimeCredentials || hasPersistedRuntimeCredentials;
   const hasManagerApiUrl = hasValue(managerApiUrl) || persistedState.hasManagerApiUrl;
   const hasWssUrl = hasValue(wssUrl) || persistedState.hasWssUrl;
+  const explicitClaimTransport = iotTransportMode?.trim().toLowerCase() === 'mqtt-x509-claim';
+  const hasAwsIotRuntimePath =
+    !explicitClaimTransport
+    && (hasValue(iotEndpoint) || persistedState.hasIotEndpoint)
+    && (hasValue(iotCertPath) || persistedState.hasIotCertPath)
+    && (hasValue(iotKeyPath) || persistedState.hasIotKeyPath)
+    && (
+      hasValue(iotClientId)
+      || hasValue(iotThingName)
+      || persistedState.hasIotClientId
+      || persistedState.hasIotThingName
+      || persistedState.hasAgentId
+    );
+  const hasAwsIotClaimPath =
+    (hasValue(iotEndpoint) || persistedState.hasIotEndpoint)
+    && (hasValue(iotCertPath) || persistedState.hasIotCertPath)
+    && (hasValue(iotKeyPath) || persistedState.hasIotKeyPath)
+    && (hasValue(iotProvisioningTemplateName) || persistedState.hasIotProvisioningTemplateName)
+    && (hasActivationCredential || hasBootstrapCredentials || persistedState.hasBootstrapToken);
 
   if (
     !hasRuntimeCredentials
     && !hasBootstrapCredentials
     && !hasActivationCredential
     && !hasPersistedCredentials
+    && !hasAwsIotRuntimePath
+    && !hasAwsIotClaimPath
   ) {
     throw new StartupConfigurationError('No activation or runtime credentials are available for agent startup', {
       envFilePath,
       stateFilePath,
       remediation:
-        'Provide AGENT_ACTIVATION_CODE, AGENT_BOOTSTRAP_TOKEN, or AGENT_ID with AGENT_RUNTIME_TOKEN, or restore the persisted state file.',
+        'Provide AGENT_ACTIVATION_CODE, AGENT_BOOTSTRAP_TOKEN, or AGENT_ID with AGENT_RUNTIME_TOKEN, or fully configure AWS IoT runtime identity, or restore the persisted state file.',
     });
   }
 
-  if (!hasManagerApiUrl && !hasRuntimePath) {
+  if (!hasManagerApiUrl && !hasRuntimePath && !hasAwsIotRuntimePath) {
     throw new StartupConfigurationError('MANAGER_API_URL is missing', {
       envFilePath,
       stateFilePath,
       remediation:
-        'Set MANAGER_API_URL in agent.env or restore a persisted state file with the manager URL.',
+        'Set MANAGER_API_URL in agent.env, restore a persisted state file with the manager URL, or fully configure AWS IoT runtime identity for aws-iot-mqtt mode.',
     });
   }
 
-  if (hasRuntimePath && !hasManagerApiUrl && !hasWssUrl) {
+  if (hasRuntimePath && !hasManagerApiUrl && !hasWssUrl && !hasAwsIotRuntimePath) {
     throw new StartupConfigurationError('No control-plane endpoint is configured for the persisted/runtime agent credentials', {
       envFilePath,
       stateFilePath,
       remediation:
-        'Set MANAGER_API_URL for HTTP mode or WSS_URL for websocket mode, or restore persisted state with one of those endpoints.',
+        'Set MANAGER_API_URL for HTTP mode, WSS_URL for websocket mode, or configure AWS_IOT_ENDPOINT with cert, key, and client identity for aws-iot-mqtt mode.',
+    });
+  }
+
+  if (controlPlaneMode === 'aws-iot-mqtt' && !hasAwsIotRuntimePath && !hasAwsIotClaimPath) {
+    throw new StartupConfigurationError('aws-iot-mqtt mode is missing required runtime or claim bootstrap settings', {
+      envFilePath,
+      stateFilePath,
+      remediation:
+        'Set AWS_IOT_ENDPOINT, AWS_IOT_CERT_PATH, AWS_IOT_KEY_PATH, and either AWS_IOT_CLIENT_ID or AWS_IOT_THING_NAME for runtime mode, or provide AWS_IOT_PROVISIONING_TEMPLATE_NAME plus activation/bootstrap credentials for claim mode.',
     });
   }
 };

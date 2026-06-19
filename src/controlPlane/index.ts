@@ -7,8 +7,8 @@ import {
   AgentState,
   ControlPlaneAuthMode,
   ControlPlaneMode,
-  SystemInfo,
 } from '../types';
+import { AwsIotMqttControlPlaneTransport } from './awsIotMqttTransport';
 import { HttpControlPlaneTransport } from './httpTransport';
 import { ControlPlaneTransport, ControlPlaneTransportContext } from './types';
 import { WebSocketControlPlaneTransport } from './websocketTransport';
@@ -32,7 +32,13 @@ const normalizeAuthMode = (
 };
 
 const resolveRequestedMode = (requestedMode: ControlPlaneMode): ActiveControlPlaneMode | undefined =>
-  requestedMode === 'http' || requestedMode === 'rest' ? 'http' : requestedMode === 'wss' ? 'wss' : undefined;
+  requestedMode === 'http' || requestedMode === 'rest'
+    ? 'http'
+    : requestedMode === 'wss'
+      ? 'wss'
+      : requestedMode === 'aws-iot-mqtt'
+        ? 'aws-iot-mqtt'
+        : undefined;
 
 const resolveRequestedAuthMode = (
   requestedAuthMode: ControlPlaneAuthMode,
@@ -63,6 +69,14 @@ const fallbackToHttp = async (
   );
 };
 
+const hasAwsIotRuntimeConfig = (state: AgentState): boolean =>
+  Boolean(
+    (state.iotEndpoint ?? config.iotEndpoint)
+    && (state.iotCertPath ?? config.iotCertPath)
+    && (state.iotKeyPath ?? config.iotKeyPath)
+    && ((state.iotClientId ?? config.iotClientId) || (state.iotThingName ?? config.iotThingName) || state.agentId),
+  );
+
 export const createControlPlaneTransport = async (
   context: ControlPlaneTransportContext,
 ): Promise<ControlPlaneTransport> => {
@@ -71,6 +85,13 @@ export const createControlPlaneTransport = async (
   const requestedAuthMode = normalizeAuthMode(
     context.state.requestedControlPlaneAuthMode,
   );
+  const prefersAwsIot =
+    requestedMode === 'aws-iot-mqtt'
+    || (
+      requestedMode === 'auto'
+      && requestedAuthMode === 'x509'
+      && hasAwsIotRuntimeConfig(context.state)
+    );
 
   if (requestedMode === 'http' || requestedMode === 'rest') {
     await context.onStateChange({
@@ -85,6 +106,47 @@ export const createControlPlaneTransport = async (
       context.authToken,
       context.capabilities,
     );
+  }
+
+  if (prefersAwsIot) {
+    if (!hasAwsIotRuntimeConfig(context.state)) {
+      const reason =
+        'AWS_IOT_ENDPOINT, AWS_IOT_CERT_PATH, AWS_IOT_KEY_PATH, and AWS_IOT_CLIENT_ID or AWS_IOT_THING_NAME are required for aws-iot-mqtt control-plane mode';
+      if (requestedMode === 'aws-iot-mqtt') {
+        throw new Error(reason);
+      }
+      return fallbackToHttp(
+        context,
+        managerClient,
+        reason,
+        requestedMode,
+        requestedAuthMode,
+      );
+    }
+
+    const transport = new AwsIotMqttControlPlaneTransport(context);
+    try {
+      await transport.start();
+      await context.onStateChange({
+        requestedControlPlaneMode: requestedMode,
+        requestedControlPlaneAuthMode: requestedAuthMode,
+        activeControlPlaneMode: 'aws-iot-mqtt',
+        activeControlPlaneAuthMode: 'x509',
+        lastFallbackReason: undefined,
+      });
+      return transport;
+    } catch (error) {
+      if (requestedMode === 'aws-iot-mqtt') {
+        throw error;
+      }
+      return fallbackToHttp(
+        context,
+        managerClient,
+        error instanceof Error ? error.message : String(error),
+        requestedMode,
+        requestedAuthMode,
+      );
+    }
   }
 
   const wssUrl = context.state.wssUrl ?? config.wssUrl;
@@ -103,7 +165,7 @@ export const createControlPlaneTransport = async (
   }
 
   if (requestedAuthMode === 'x509') {
-    const reason = 'CONTROL_PLANE_AUTH_MODE=x509 is not implemented yet';
+    const reason = 'CONTROL_PLANE_AUTH_MODE=x509 requires CONTROL_PLANE_MODE=aws-iot-mqtt';
     if (requestedMode === 'wss') {
       throw new Error(reason);
     }

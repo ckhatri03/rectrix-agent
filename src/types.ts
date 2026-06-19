@@ -19,10 +19,11 @@ export type CapabilityKey =
   | 'telegraf.remove';
 
 export type AgentJobType = CapabilityKey;
-export type ControlPlaneMode = 'auto' | 'http' | 'rest' | 'wss';
-export type ActiveControlPlaneMode = 'http' | 'wss';
+export type ControlPlaneMode = 'auto' | 'http' | 'rest' | 'wss' | 'aws-iot-mqtt';
+export type ActiveControlPlaneMode = 'http' | 'wss' | 'aws-iot-mqtt';
 export type ControlPlaneAuthMode = 'auto' | 'token' | 'x509';
 export type ActiveControlPlaneAuthMode = 'token' | 'x509';
+export type AwsIotTransportMode = 'mqtt-x509-claim' | 'mqtt-x509-runtime';
 export type JobEventLevel = 'info' | 'error';
 export type JobExecutionStatus = 'succeeded' | 'failed';
 
@@ -32,6 +33,15 @@ export interface AgentState {
   runtimeToken?: string;
   managerApiUrl?: string;
   wssUrl?: string;
+  iotEndpoint?: string;
+  iotThingName?: string;
+  iotClientId?: string;
+  iotCaPath?: string;
+  iotCertPath?: string;
+  iotKeyPath?: string;
+  iotTopicPrefix?: string;
+  iotProvisioningTemplateName?: string;
+  iotTransportMode?: AwsIotTransportMode;
   pollIntervalMs?: number;
   heartbeatIntervalMs?: number;
   requestedControlPlaneMode?: ControlPlaneMode;
@@ -39,9 +49,11 @@ export interface AgentState {
   requestedControlPlaneAuthMode?: ControlPlaneAuthMode;
   activeControlPlaneAuthMode?: ActiveControlPlaneAuthMode;
   lastSuccessfulWssConnectAt?: string;
+  lastSuccessfulMqttConnectAt?: string;
   lastFallbackReason?: string;
   activationDisabledAt?: string;
   activationDisabledReason?: string;
+  completedJobs?: Record<string, JobExecutionStatus>;
 }
 
 export interface ManagedFile {

@@ -27,14 +27,18 @@ export const buildHelloMessage = (
   system: SystemInfo,
   capabilities: CapabilityKey[],
   authMode: 'token' | 'x509',
-  authToken: string,
+  authToken?: string,
+  transportMode: 'wss' | 'aws-iot-mqtt' = 'wss',
 ) =>
   withEnvelope('hello', {
     agentId: state.agentId,
     hostname: system.hostname,
     agentVersion: config.agentVersion,
-    transportMode: 'wss',
-    auth: authMode === 'token' ? { mode: authMode, token: authToken } : { mode: authMode },
+    transportMode,
+    auth:
+      authMode === 'token' && authToken
+        ? { mode: authMode, token: authToken }
+        : { mode: authMode },
     system,
     capabilities,
   });
@@ -54,8 +58,9 @@ export const buildPresencePingMessage = (
   state: AgentState,
   system: SystemInfo,
   capabilities: CapabilityKey[],
+  messageType: 'presence.ping' | 'heartbeat' = 'presence.ping',
 ) =>
-  withEnvelope('presence.ping', {
+  withEnvelope(messageType, {
     agentId: state.agentId,
     hostname: system.hostname,
     agentVersion: config.agentVersion,

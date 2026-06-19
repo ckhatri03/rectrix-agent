@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { AwsIotClaimBootstrapMaterial } from './awsIotProvisioning';
 import { config } from './config';
 import { extractJob } from './controlPlane/messageCodec';
 import { logger } from './logger';
@@ -6,6 +7,7 @@ import {
   AgentJob,
   AgentState,
   CapabilityKey,
+  AwsIotTransportMode,
   ControlPlaneAuthMode,
   ControlPlaneMode,
   SystemInfo,
@@ -70,7 +72,13 @@ const asControlPlaneMode = (value: unknown): ControlPlaneMode | undefined => {
     return undefined;
   }
   const normalized = value.trim().toLowerCase();
-  if (normalized === 'auto' || normalized === 'http' || normalized === 'rest' || normalized === 'wss') {
+  if (
+    normalized === 'auto'
+    || normalized === 'http'
+    || normalized === 'rest'
+    || normalized === 'wss'
+    || normalized === 'aws-iot-mqtt'
+  ) {
     return normalized;
   }
   return undefined;
@@ -87,6 +95,48 @@ const asControlPlaneAuthMode = (
     return normalized;
   }
   return undefined;
+};
+
+const asAwsIotTransportMode = (
+  value: unknown,
+): AwsIotTransportMode | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'mqtt-x509-claim' || normalized === 'mqtt-x509-runtime') {
+    return normalized;
+  }
+  return undefined;
+};
+
+const asString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value.trim() : undefined;
+
+export type AgentActivationBootstrap = {
+  state: Partial<AgentState>;
+  claimBootstrap?: AwsIotClaimBootstrapMaterial;
+};
+
+const extractClaimBootstrap = (response: any): AwsIotClaimBootstrapMaterial | undefined => {
+  const claimBootstrap = {
+    caPem:
+      asString(response?.iotCaPem)
+      ?? asString(response?.controlPlane?.iotCaPem)
+      ?? asString(response?.controlPlane?.iot?.caPem),
+    certificatePem:
+      asString(response?.iotClaimCertificatePem)
+      ?? asString(response?.controlPlane?.iotClaimCertificatePem)
+      ?? asString(response?.controlPlane?.iot?.certificatePem),
+    privateKeyPem:
+      asString(response?.iotClaimPrivateKeyPem)
+      ?? asString(response?.controlPlane?.iotClaimPrivateKeyPem)
+      ?? asString(response?.controlPlane?.iot?.privateKeyPem),
+  };
+
+  return claimBootstrap.caPem || claimBootstrap.certificatePem || claimBootstrap.privateKeyPem
+    ? claimBootstrap
+    : undefined;
 };
 
 export class ManagerClient {
@@ -107,7 +157,7 @@ export class ManagerClient {
     };
   }
 
-  async activate(): Promise<Partial<AgentState>> {
+  async activate(): Promise<AgentActivationBootstrap> {
     if (!config.activationCode) {
       throw new Error('Activation requires AGENT_ACTIVATION_CODE');
     }
@@ -126,18 +176,57 @@ export class ManagerClient {
     });
 
     return {
-      agentId: response?.agentId,
-      bootstrapToken: response?.bootstrapToken,
-      managerApiUrl: response?.managerApiUrl ?? this.baseUrl(),
-      wssUrl: response?.wssUrl ?? response?.controlPlane?.wssUrl,
-      pollIntervalMs: response?.pollIntervalMs,
-      heartbeatIntervalMs: response?.heartbeatIntervalMs,
-      requestedControlPlaneMode: asControlPlaneMode(
-        response?.controlPlaneMode ?? response?.controlPlane?.mode,
-      ),
-      requestedControlPlaneAuthMode: asControlPlaneAuthMode(
-        response?.controlPlaneAuthMode ?? response?.controlPlane?.authMode,
-      ),
+      state: {
+        agentId: response?.agentId,
+        bootstrapToken: response?.bootstrapToken,
+        managerApiUrl: response?.managerApiUrl ?? this.baseUrl(),
+        wssUrl: response?.wssUrl ?? response?.controlPlane?.wssUrl,
+        iotEndpoint:
+          asString(response?.iotEndpoint)
+          ?? asString(response?.controlPlane?.iotEndpoint)
+          ?? asString(response?.controlPlane?.iot?.endpoint),
+        iotThingName:
+          asString(response?.iotThingName)
+          ?? asString(response?.controlPlane?.iotThingName)
+          ?? asString(response?.controlPlane?.iot?.thingName),
+        iotClientId:
+          asString(response?.iotClientId)
+          ?? asString(response?.controlPlane?.iotClientId)
+          ?? asString(response?.controlPlane?.iot?.clientId),
+        iotCaPath:
+          asString(response?.iotCaPath)
+          ?? asString(response?.controlPlane?.iotCaPath)
+          ?? asString(response?.controlPlane?.iot?.caPath),
+        iotCertPath:
+          asString(response?.iotCertPath)
+          ?? asString(response?.controlPlane?.iotCertPath)
+          ?? asString(response?.controlPlane?.iot?.certPath),
+        iotKeyPath:
+          asString(response?.iotKeyPath)
+          ?? asString(response?.controlPlane?.iotKeyPath)
+          ?? asString(response?.controlPlane?.iot?.keyPath),
+        iotTopicPrefix:
+          asString(response?.iotTopicPrefix)
+          ?? asString(response?.controlPlane?.iotTopicPrefix)
+          ?? asString(response?.controlPlane?.iot?.topicPrefix),
+        iotProvisioningTemplateName:
+          asString(response?.iotProvisioningTemplateName)
+          ?? asString(response?.controlPlane?.iotProvisioningTemplateName)
+          ?? asString(response?.controlPlane?.iot?.provisioningTemplateName),
+        iotTransportMode:
+          asAwsIotTransportMode(response?.iotTransportMode)
+          ?? asAwsIotTransportMode(response?.controlPlane?.iotTransportMode)
+          ?? asAwsIotTransportMode(response?.controlPlane?.iot?.transportMode),
+        pollIntervalMs: response?.pollIntervalMs,
+        heartbeatIntervalMs: response?.heartbeatIntervalMs,
+        requestedControlPlaneMode: asControlPlaneMode(
+          response?.controlPlaneMode ?? response?.controlPlane?.mode,
+        ),
+        requestedControlPlaneAuthMode: asControlPlaneAuthMode(
+          response?.controlPlaneAuthMode ?? response?.controlPlane?.authMode,
+        ),
+      },
+      claimBootstrap: extractClaimBootstrap(response),
     };
   }
 
@@ -160,6 +249,51 @@ export class ManagerClient {
       runtimeToken: response?.runtimeToken ?? response?.agentToken,
       managerApiUrl: response?.managerApiUrl ?? this.baseUrl(),
       wssUrl: response?.wssUrl ?? response?.controlPlane?.wssUrl ?? this.state.wssUrl,
+      iotEndpoint:
+        asString(response?.iotEndpoint)
+        ?? asString(response?.controlPlane?.iotEndpoint)
+        ?? asString(response?.controlPlane?.iot?.endpoint)
+        ?? this.state.iotEndpoint,
+      iotThingName:
+        asString(response?.iotThingName)
+        ?? asString(response?.controlPlane?.iotThingName)
+        ?? asString(response?.controlPlane?.iot?.thingName)
+        ?? this.state.iotThingName,
+      iotClientId:
+        asString(response?.iotClientId)
+        ?? asString(response?.controlPlane?.iotClientId)
+        ?? asString(response?.controlPlane?.iot?.clientId)
+        ?? this.state.iotClientId,
+      iotCaPath:
+        asString(response?.iotCaPath)
+        ?? asString(response?.controlPlane?.iotCaPath)
+        ?? asString(response?.controlPlane?.iot?.caPath)
+        ?? this.state.iotCaPath,
+      iotCertPath:
+        asString(response?.iotCertPath)
+        ?? asString(response?.controlPlane?.iotCertPath)
+        ?? asString(response?.controlPlane?.iot?.certPath)
+        ?? this.state.iotCertPath,
+      iotKeyPath:
+        asString(response?.iotKeyPath)
+        ?? asString(response?.controlPlane?.iotKeyPath)
+        ?? asString(response?.controlPlane?.iot?.keyPath)
+        ?? this.state.iotKeyPath,
+      iotTopicPrefix:
+        asString(response?.iotTopicPrefix)
+        ?? asString(response?.controlPlane?.iotTopicPrefix)
+        ?? asString(response?.controlPlane?.iot?.topicPrefix)
+        ?? this.state.iotTopicPrefix,
+      iotProvisioningTemplateName:
+        asString(response?.iotProvisioningTemplateName)
+        ?? asString(response?.controlPlane?.iotProvisioningTemplateName)
+        ?? asString(response?.controlPlane?.iot?.provisioningTemplateName)
+        ?? this.state.iotProvisioningTemplateName,
+      iotTransportMode:
+        asAwsIotTransportMode(response?.iotTransportMode)
+        ?? asAwsIotTransportMode(response?.controlPlane?.iotTransportMode)
+        ?? asAwsIotTransportMode(response?.controlPlane?.iot?.transportMode)
+        ?? this.state.iotTransportMode,
       pollIntervalMs: response?.pollIntervalMs,
       heartbeatIntervalMs: response?.heartbeatIntervalMs,
       requestedControlPlaneMode:

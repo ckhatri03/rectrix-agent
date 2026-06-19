@@ -1,7 +1,12 @@
 import os from 'node:os';
 import dotenv from 'dotenv';
 import { DEFAULT_STATE_FILE_PATH, resolveAgentEnvFilePath } from './envPaths';
-import { CapabilityKey, ControlPlaneAuthMode, ControlPlaneMode } from './types';
+import {
+  AwsIotTransportMode,
+  CapabilityKey,
+  ControlPlaneAuthMode,
+  ControlPlaneMode,
+} from './types';
 import packageJson from '../package.json';
 
 dotenv.config({ path: resolveAgentEnvFilePath() });
@@ -57,8 +62,9 @@ const asEnum = <T extends string>(
   return raw;
 };
 
-const CONTROL_PLANE_MODES = ['auto', 'http', 'rest', 'wss'] as const satisfies ReadonlyArray<ControlPlaneMode>;
+const CONTROL_PLANE_MODES = ['auto', 'http', 'rest', 'wss', 'aws-iot-mqtt'] as const satisfies ReadonlyArray<ControlPlaneMode>;
 const CONTROL_PLANE_AUTH_MODES = ['auto', 'token', 'x509'] as const satisfies ReadonlyArray<ControlPlaneAuthMode>;
+const AWS_IOT_TRANSPORT_MODES = ['mqtt-x509-claim', 'mqtt-x509-runtime'] as const satisfies ReadonlyArray<AwsIotTransportMode>;
 const DEFAULT_ALLOWED_CONFIG_ROOTS = [
   '/etc/mosquitto',
   '/etc/telegraf',
@@ -66,11 +72,11 @@ const DEFAULT_ALLOWED_CONFIG_ROOTS = [
   '/var/lib/mosquitto',
 ] as const;
 const DEFAULT_ALLOWED_UNIT_PATTERNS = [
-  '^mosquitto(?:@.+)?\\.service$',
-  '^telegraf(?:@.+)?\\.service$',
-  '^telegraf-.+\\.service$',
-  '^[a-z0-9_]+_mqtt\\.service$',
-  '^[a-z0-9_]+_telegraf\\.service$',
+  '^mosquitto(?:@.+)?\.service$',
+  '^telegraf(?:@.+)?\.service$',
+  '^telegraf-.+\.service$',
+  '^[a-z0-9_]+_mqtt\.service$',
+  '^[a-z0-9_]+_telegraf\.service$',
 ] as const;
 
 export const CAPABILITIES: CapabilityKey[] = [
@@ -100,6 +106,19 @@ export const config = {
   agentVersion: process.env.AGENT_VERSION ?? packageJson.version,
   managerApiUrl: asString(process.env.MANAGER_API_URL),
   wssUrl: asString(process.env.WSS_URL),
+  iotEndpoint: asString(process.env.AWS_IOT_ENDPOINT),
+  iotThingName: asString(process.env.AWS_IOT_THING_NAME),
+  iotClientId: asString(process.env.AWS_IOT_CLIENT_ID),
+  iotCaPath: asString(process.env.AWS_IOT_CA_PATH),
+  iotCertPath: asString(process.env.AWS_IOT_CERT_PATH),
+  iotKeyPath: asString(process.env.AWS_IOT_KEY_PATH),
+  iotTopicPrefix: asString(process.env.AWS_IOT_TOPIC_PREFIX) ?? 'rectrix/agents',
+  iotProvisioningTemplateName: asString(process.env.AWS_IOT_PROVISIONING_TEMPLATE_NAME),
+  iotTransportMode: asEnum<AwsIotTransportMode>(
+    'AWS_IOT_TRANSPORT_MODE',
+    'mqtt-x509-runtime',
+    AWS_IOT_TRANSPORT_MODES,
+  ),
   activationCode: asString(process.env.AGENT_ACTIVATION_CODE)?.toUpperCase(),
   agentId: asString(process.env.AGENT_ID),
   bootstrapToken: asString(process.env.AGENT_BOOTSTRAP_TOKEN),
@@ -129,6 +148,9 @@ export const config = {
   wssForceReconnectMs: asNumber('WSS_FORCE_RECONNECT_MS', 3600000),
   wssBackoffInitialMs: asNumber('WSS_BACKOFF_INITIAL_MS', 1000),
   wssBackoffMaxMs: asNumber('WSS_BACKOFF_MAX_MS', 30000),
+  mqttConnectTimeoutMs: asNumber('AWS_IOT_CONNECT_TIMEOUT_MS', 10000),
+  mqttBackoffInitialMs: asNumber('AWS_IOT_BACKOFF_INITIAL_MS', 1000),
+  mqttBackoffMaxMs: asNumber('AWS_IOT_BACKOFF_MAX_MS', 30000),
   activationPath: process.env.ACTIVATION_PATH ?? '/public-agent/activate',
   enrollPath: process.env.ENROLL_PATH ?? '/agent/enroll',
   heartbeatPath: process.env.HEARTBEAT_PATH ?? '/agent/heartbeat',

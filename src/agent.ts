@@ -1,5 +1,9 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
+import {
+  hydrateAwsIotClaimIdentity,
+  provisionAwsIotRuntimeIdentity,
+} from './awsIotProvisioning';
 import { config } from './config';
 import { createControlPlaneTransport } from './controlPlane';
 import { ControlPlaneTransport } from './controlPlane/types';
@@ -55,6 +59,18 @@ export class AgentService {
       ...persistedState,
       managerApiUrl: config.managerApiUrl ?? persistedState.managerApiUrl,
       wssUrl: config.wssUrl ?? persistedState.wssUrl,
+      iotEndpoint: config.iotEndpoint ?? persistedState.iotEndpoint,
+      iotThingName: config.iotThingName ?? persistedState.iotThingName,
+      iotClientId: config.iotClientId ?? persistedState.iotClientId,
+      iotCaPath: config.iotCaPath ?? persistedState.iotCaPath,
+      iotCertPath: config.iotCertPath ?? persistedState.iotCertPath,
+      iotKeyPath: config.iotKeyPath ?? persistedState.iotKeyPath,
+      iotTopicPrefix: config.iotTopicPrefix ?? persistedState.iotTopicPrefix,
+      iotProvisioningTemplateName:
+        config.iotProvisioningTemplateName
+        ?? persistedState.iotProvisioningTemplateName,
+      iotTransportMode:
+        persistedState.iotTransportMode ?? config.iotTransportMode,
       agentId: config.agentId ?? persistedState.agentId,
       bootstrapToken: config.bootstrapToken ?? persistedState.bootstrapToken,
       runtimeToken: config.runtimeToken ?? persistedState.runtimeToken,
@@ -68,9 +84,11 @@ export class AgentService {
         persistedState.requestedControlPlaneAuthMode ?? config.controlPlaneAuthMode,
       activeControlPlaneAuthMode: persistedState.activeControlPlaneAuthMode,
       lastSuccessfulWssConnectAt: persistedState.lastSuccessfulWssConnectAt,
+      lastSuccessfulMqttConnectAt: persistedState.lastSuccessfulMqttConnectAt,
       lastFallbackReason: persistedState.lastFallbackReason,
       activationDisabledAt: persistedState.activationDisabledAt,
       activationDisabledReason: persistedState.activationDisabledReason,
+      completedJobs: persistedState.completedJobs ?? {},
     };
 
     const system = await getSystemInfo();
@@ -86,14 +104,14 @@ export class AgentService {
     });
 
     const authToken = this.state.runtimeToken ?? this.state.bootstrapToken;
-    if (!this.state.agentId || !authToken) {
+    if (!this.state.agentId) {
       throw new Error('Agent bootstrap did not yield agent credentials');
     }
 
     this.transport = await createControlPlaneTransport({
       state: this.state,
       system,
-      authToken,
+      authToken: authToken ?? '',
       capabilities: config.capabilities,
       onStateChange: async (update) => {
         await this.updateState(update);
@@ -107,6 +125,8 @@ export class AgentService {
         agentId: this.state.agentId,
         managerApiUrl: this.state.managerApiUrl,
         wssUrl: this.state.wssUrl,
+        iotEndpoint: this.state.iotEndpoint,
+        iotClientId: this.state.iotClientId ?? this.state.iotThingName,
         hostname: system.hostname,
         requestedControlPlaneMode: this.state.requestedControlPlaneMode,
         activeControlPlaneMode: this.transport.mode,
@@ -127,7 +147,7 @@ export class AgentService {
   }
 
   private async persistRuntimeCredentials(): Promise<void> {
-    if (!this.state.agentId || !this.state.runtimeToken) {
+    if (!this.state.agentId) {
       return;
     }
 
@@ -135,9 +155,20 @@ export class AgentService {
       MANAGER_API_URL: this.state.managerApiUrl ?? '',
       WSS_URL: this.state.wssUrl ?? '',
       AGENT_ID: this.state.agentId,
-      AGENT_RUNTIME_TOKEN: this.state.runtimeToken,
+      AGENT_RUNTIME_TOKEN: this.state.runtimeToken ?? '',
       AGENT_BOOTSTRAP_TOKEN: '',
       AGENT_ACTIVATION_CODE: '',
+      AWS_IOT_ENDPOINT: this.state.iotEndpoint ?? '',
+      AWS_IOT_THING_NAME: this.state.iotThingName ?? '',
+      AWS_IOT_CLIENT_ID: this.state.iotClientId ?? '',
+      AWS_IOT_CA_PATH: this.state.iotCaPath ?? '',
+      AWS_IOT_CERT_PATH: this.state.iotCertPath ?? '',
+      AWS_IOT_KEY_PATH: this.state.iotKeyPath ?? '',
+      AWS_IOT_TOPIC_PREFIX: this.state.iotTopicPrefix ?? config.iotTopicPrefix,
+      AWS_IOT_PROVISIONING_TEMPLATE_NAME:
+        this.state.iotProvisioningTemplateName ?? '',
+      AWS_IOT_TRANSPORT_MODE:
+        this.state.iotTransportMode ?? config.iotTransportMode,
       ACTIVATION_DISABLED_AT: '',
       ACTIVATION_DISABLED_REASON: '',
       POLL_INTERVAL_MS: String(
@@ -190,6 +221,16 @@ export class AgentService {
   }
 
   private async bootstrap(system: SystemInfo): Promise<void> {
+    if (
+      this.hasRuntimeMqttIdentity()
+      && this.state.agentId
+      && !this.state.bootstrapToken
+      && !this.state.runtimeToken
+    ) {
+      await this.persistRuntimeCredentials();
+      return;
+    }
+
     const client = new ManagerClient(this.state, system);
 
     if (this.state.activationDisabledReason) {
@@ -201,7 +242,12 @@ export class AgentService {
     if (!this.state.agentId || !(this.state.bootstrapToken || this.state.runtimeToken)) {
       logger.info('no persisted agent credentials found, activating');
       try {
-        await this.updateState(await client.activate());
+        const activation = await client.activate();
+        await this.updateState(activation.state);
+        await hydrateAwsIotClaimIdentity(
+          { ...this.state, ...activation.state },
+          activation.claimBootstrap,
+        );
       } catch (error) {
         if (this.isTerminalActivationError(error)) {
           logger.error({ err: error }, 'activation rejected permanently by manager');
@@ -209,6 +255,11 @@ export class AgentService {
         }
         throw error;
       }
+    }
+
+    if (this.shouldProvisionAwsIotRuntimeIdentity()) {
+      logger.info({ agentId: this.state.agentId }, 'provisioning AWS IoT runtime identity from claim credentials');
+      await this.updateState(await provisionAwsIotRuntimeIdentity(this.state, system));
     }
 
     if (this.state.runtimeToken) {
@@ -222,8 +273,59 @@ export class AgentService {
     }
 
     logger.info({ agentId: this.state.agentId }, 'enrolling with manager');
-    await this.updateState(await client.enroll(enrollmentToken));
+    const enrollment = await client.enroll(enrollmentToken);
+    await this.updateState({
+      ...enrollment,
+      iotTransportMode:
+        this.state.iotTransportMode === 'mqtt-x509-runtime'
+          ? 'mqtt-x509-runtime'
+          : enrollment.iotTransportMode,
+    });
     await this.persistRuntimeCredentials();
+  }
+
+  private shouldProvisionAwsIotRuntimeIdentity(): boolean {
+    const requestedMode =
+      this.state.requestedControlPlaneMode ?? config.controlPlaneMode;
+    if (requestedMode !== 'aws-iot-mqtt') {
+      return false;
+    }
+
+    const transportMode = this.state.iotTransportMode ?? config.iotTransportMode;
+    return Boolean(
+      transportMode === 'mqtt-x509-claim'
+      && !this.hasRuntimeMqttIdentity()
+      && this.state.agentId
+      && (this.state.iotEndpoint ?? config.iotEndpoint)
+      && (this.state.iotCertPath ?? config.iotCertPath)
+      && (this.state.iotKeyPath ?? config.iotKeyPath)
+      && (this.state.iotProvisioningTemplateName ?? config.iotProvisioningTemplateName)
+      && (this.state.bootstrapToken || config.activationCode),
+    );
+  }
+
+  private hasRuntimeMqttIdentity(): boolean {
+    const requestedMode =
+      this.state.requestedControlPlaneMode ?? config.controlPlaneMode;
+    if (requestedMode !== 'aws-iot-mqtt') {
+      return false;
+    }
+
+    const transportMode = this.state.iotTransportMode ?? config.iotTransportMode;
+    if (transportMode === 'mqtt-x509-claim') {
+      return false;
+    }
+
+    return Boolean(
+      this.state.agentId
+      && (this.state.iotEndpoint ?? config.iotEndpoint)
+      && (this.state.iotCertPath ?? config.iotCertPath)
+      && (this.state.iotKeyPath ?? config.iotKeyPath)
+      && (
+        (this.state.iotClientId ?? config.iotClientId)
+        || (this.state.iotThingName ?? config.iotThingName)
+      ),
+    );
   }
 
   private heartbeatDelayMs(transport: ControlPlaneTransport): number {
@@ -319,7 +421,11 @@ export class AgentService {
         if (transport.mode === 'http') {
           await delay(this.httpJobPollDelayMs(idleSinceMs));
         } else {
-          await delay(config.wssBackoffInitialMs);
+          await delay(
+            transport.mode === 'aws-iot-mqtt'
+              ? config.mqttBackoffInitialMs
+              : config.wssBackoffInitialMs,
+          );
         }
       }
     }

@@ -1,12 +1,13 @@
 {
   "name": "rectrix-agent",
-  "version": "2026.06.000.027",
+  "version": "2026.06.000.030",
   "description": "Rectrix edge deployment agent for Mosquitto and Telegraf hosts",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "npm run build && node --test test"
   },
   "engines": {
     "node": ">=20.0.0"

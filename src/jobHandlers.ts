@@ -40,7 +40,7 @@ const diagnosticsSchema = z.object({
   note: z.string().trim().min(1).max(500).optional(),
   requestedBy: z.string().trim().min(1).max(200).optional(),
   expectedTransportMode: z
-    .enum(['auto', 'http', 'rest', 'wss'])
+    .enum(['auto', 'http', 'rest', 'wss', 'aws-iot-mqtt'])
     .optional(),
 });
 

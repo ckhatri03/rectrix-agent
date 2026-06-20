@@ -16,7 +16,8 @@ usage() {
 Usage: sudo bash uninstall.sh [--purge] [--help]
 
 Options:
-  --purge   Also remove /etc/rectrix-agent and /var/lib/rectrix-agent.
+  --purge   Also remove /etc/rectrix-agent and /var/lib/rectrix-agent,
+            including local AWS IoT certificates and private keys.
   --help    Show this help text.
 
 Default behavior removes the Rectrix agent service, app files, sudoers
@@ -154,6 +155,7 @@ if id -u "${SERVICE_USER}" >/dev/null 2>&1; then
 fi
 
 if [[ "${PURGE_DATA}" -eq 1 ]]; then
+  remove_if_present "${STATE_DIR}/certs"
   rm -rf "${ENV_DIR}" "${STATE_DIR}"
 fi
 
@@ -171,6 +173,7 @@ if [[ "${PURGE_DATA}" -eq 1 ]]; then
   echo "Removed additional data:"
   echo "  ${ENV_DIR}"
   echo "  ${STATE_DIR}"
+  echo "  local AWS IoT certificates and private keys under ${STATE_DIR}/certs"
 else
   echo "Preserved:"
   echo "  ${ENV_DIR}"

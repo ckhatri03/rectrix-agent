@@ -257,9 +257,14 @@ export class AgentService {
       }
     }
 
-    if (this.shouldProvisionAwsIotRuntimeIdentity()) {
+    const shouldProvisionAwsIotRuntimeIdentity = this.shouldProvisionAwsIotRuntimeIdentity();
+    if (shouldProvisionAwsIotRuntimeIdentity) {
       logger.info({ agentId: this.state.agentId }, 'provisioning AWS IoT runtime identity from claim credentials');
       await this.updateState(await provisionAwsIotRuntimeIdentity(this.state, system));
+    } else if (this.requiresAwsIotClaimProvisioning()) {
+      throw new Error(
+        'AWS IoT claim bootstrap is incomplete; refusing HTTP enrollment because no runtime X.509 identity was provisioned',
+      );
     }
 
     if (this.state.runtimeToken) {
@@ -302,6 +307,15 @@ export class AgentService {
       && (this.state.iotProvisioningTemplateName ?? config.iotProvisioningTemplateName)
       && (this.state.bootstrapToken || config.activationCode),
     );
+  }
+
+  private requiresAwsIotClaimProvisioning(): boolean {
+    const requestedMode =
+      this.state.requestedControlPlaneMode ?? config.controlPlaneMode;
+    const transportMode = this.state.iotTransportMode ?? config.iotTransportMode;
+    return requestedMode === 'aws-iot-mqtt'
+      && transportMode === 'mqtt-x509-claim'
+      && !this.hasRuntimeMqttIdentity();
   }
 
   private hasRuntimeMqttIdentity(): boolean {

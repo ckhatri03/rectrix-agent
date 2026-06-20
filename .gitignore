@@ -3,4 +3,6 @@ dist/
 .env
 .DS_Store
 npm-debug.log*
-
+test-agent.env
+test-state.json
+test-certs/

@@ -44,6 +44,8 @@ fi
 REPO_OWNER="${REPO_OWNER:-ckhatri03}"
 REPO_NAME="${REPO_NAME:-rectrix-agent}"
 REPO_REF="${REPO_REF:-main}"
+PUBLIC_AGENT_BASE_URL="${PUBLIC_AGENT_BASE_URL:-https://manager-prod.sensorlog.io}"
+PUBLIC_AGENT_BASE_URL="${PUBLIC_AGENT_BASE_URL%/}"
 SERVICE_USER="${SERVICE_USER:-rectrix-agent}"
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/rectrix-agent}"
 APP_DIR="${INSTALL_ROOT}/app"
@@ -53,7 +55,7 @@ ENV_FILE="${ENV_FILE:-${ENV_DIR}/agent.env}"
 LOG_FILE="${LOG_FILE:-/var/log/rectrix-agent.log}"
 SYSTEMD_UNIT_DEST="${SYSTEMD_UNIT_DEST:-/etc/systemd/system/rectrix-agent.service}"
 SUDOERS_FILE="${SUDOERS_FILE:-/etc/sudoers.d/rectrix-agent}"
-ARCHIVE_URL="${ARCHIVE_URL:-https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/${REPO_REF}}"
+ARCHIVE_URL="${ARCHIVE_URL:-${PUBLIC_AGENT_BASE_URL}/public-agent/releases/latest/archive}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -281,10 +283,8 @@ bootstrap_token="$(awk -F= '/^AGENT_BOOTSTRAP_TOKEN=/{print $2}' "${ENV_FILE}" |
 runtime_token="$(awk -F= '/^AGENT_RUNTIME_TOKEN=/{print $2}' "${ENV_FILE}" | tail -n 1)"
 
 if [[ -z "${manager_url}" || "${manager_url}" == "https://mqttmgmt.example.com" ]]; then
-  manager_url="$(prompt_value "Manager API URL: " "${manager_url}")"
-  if [[ -n "${manager_url}" ]]; then
-    set_env_value "${ENV_FILE}" "MANAGER_API_URL" "${manager_url}"
-  fi
+  manager_url="${PUBLIC_AGENT_BASE_URL}"
+  set_env_value "${ENV_FILE}" "MANAGER_API_URL" "${manager_url}"
 fi
 
 if [[ -n "${agent_id}" && ( -n "${bootstrap_token}" || -n "${runtime_token}" ) ]]; then

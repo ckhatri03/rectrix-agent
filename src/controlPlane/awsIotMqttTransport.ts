@@ -75,6 +75,7 @@ export class AwsIotMqttControlPlaneTransport implements ControlPlaneTransport {
   private stopped = false;
   private reconnectLoopPromise: Promise<void> | null = null;
   private reconnectAttempts = 0;
+  private connectionState: 'disconnected' | 'connecting' | 'connected' | 'interrupted' = 'disconnected';
 
   constructor(private readonly context: ControlPlaneTransportContext) {
     this.endpoint = context.state.iotEndpoint ?? config.iotEndpoint ?? '';
@@ -112,14 +113,17 @@ export class AwsIotMqttControlPlaneTransport implements ControlPlaneTransport {
 
     this.connection.on('interrupt', (error) => {
       logger.warn({ err: error }, 'AWS IoT MQTT connection interrupted');
+      this.connectionState = 'interrupted';
     });
     this.connection.on('resume', (_returnCode, sessionPresent) => {
       logger.info({ sessionPresent }, 'AWS IoT MQTT connection resumed');
+      this.connectionState = 'connected';
       if (!sessionPresent) {
         void this.subscribeControlTopics();
       }
     });
     this.connection.on('disconnect', () => {
+      this.connectionState = 'disconnected';
       if (this.stopped) {
         return;
       }
@@ -232,6 +236,18 @@ export class AwsIotMqttControlPlaneTransport implements ControlPlaneTransport {
     if (this.stopped) {
       return;
     }
+    if (this.connectionState === 'connected') {
+      return;
+    }
+    if (this.connectionState === 'interrupted') {
+      throw new Error('AWS IoT MQTT connection is interrupted');
+    }
+    if (this.connectionState === 'connecting') {
+      if (this.connectPromise) {
+        await this.connectPromise;
+      }
+      return;
+    }
     if (!this.connectPromise) {
       this.connectPromise = this.openConnection().finally(() => {
         this.connectPromise = null;
@@ -241,26 +257,33 @@ export class AwsIotMqttControlPlaneTransport implements ControlPlaneTransport {
   }
 
   private async openConnection(): Promise<void> {
-    await this.connection.connect();
-    this.reconnectAttempts = 0;
-    await this.subscribeControlTopics();
-    await this.context.onStateChange({
-      activeControlPlaneMode: 'aws-iot-mqtt',
-      activeControlPlaneAuthMode: 'x509',
-      lastSuccessfulMqttConnectAt: new Date().toISOString(),
-      lastFallbackReason: undefined,
-    });
-    await this.publishConnected(
-      `${this.statusTopicPrefix}/hello`,
-      buildHelloMessage(
-        this.context.state,
-        this.context.system,
-        this.context.capabilities,
-        this.authMode,
-        undefined,
-        'aws-iot-mqtt',
-      ),
-    );
+    this.connectionState = 'connecting';
+    try {
+      await this.connection.connect();
+      this.connectionState = 'connected';
+      this.reconnectAttempts = 0;
+      await this.subscribeControlTopics();
+      await this.context.onStateChange({
+        activeControlPlaneMode: 'aws-iot-mqtt',
+        activeControlPlaneAuthMode: 'x509',
+        lastSuccessfulMqttConnectAt: new Date().toISOString(),
+        lastFallbackReason: undefined,
+      });
+      await this.publishConnected(
+        `${this.statusTopicPrefix}/hello`,
+        buildHelloMessage(
+          this.context.state,
+          this.context.system,
+          this.context.capabilities,
+          this.authMode,
+          undefined,
+          'aws-iot-mqtt',
+        ),
+      );
+    } catch (error) {
+      this.connectionState = 'disconnected';
+      throw error;
+    }
   }
 
   private async subscribeControlTopics(): Promise<void> {
@@ -355,7 +378,7 @@ export class AwsIotMqttControlPlaneTransport implements ControlPlaneTransport {
         return;
       }
       try {
-        await this.openConnection();
+        await this.connect();
         logger.info('AWS IoT MQTT transport reconnected');
         return;
       } catch (error) {

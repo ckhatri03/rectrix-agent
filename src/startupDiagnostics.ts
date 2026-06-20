@@ -168,6 +168,7 @@ export const validateStartupEnvironment = async (): Promise<void> => {
     && (hasValue(iotKeyPath) || persistedState.hasIotKeyPath)
     && (hasValue(iotProvisioningTemplateName) || persistedState.hasIotProvisioningTemplateName)
     && (hasActivationCredential || hasBootstrapCredentials || persistedState.hasBootstrapToken);
+  const hasManagerAssistedClaimBootstrap = hasManagerApiUrl && hasActivationCredential;
 
   if (
     !hasRuntimeCredentials
@@ -203,7 +204,12 @@ export const validateStartupEnvironment = async (): Promise<void> => {
     });
   }
 
-  if (controlPlaneMode === 'aws-iot-mqtt' && !hasAwsIotRuntimePath && !hasAwsIotClaimPath) {
+  if (
+    controlPlaneMode === 'aws-iot-mqtt'
+    && !hasAwsIotRuntimePath
+    && !hasAwsIotClaimPath
+    && !hasManagerAssistedClaimBootstrap
+  ) {
     throw new StartupConfigurationError('aws-iot-mqtt mode is missing required runtime or claim bootstrap settings', {
       envFilePath,
       stateFilePath,

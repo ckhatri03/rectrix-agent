@@ -1,5 +1,17 @@
 # Changelog
 
+
+## 2026-06-20
+- Added deterministic local claim/runtime certificate paths to the manager-assisted AWS IoT bootstrap.
+- Blocked HTTP enrollment whenever AWS IoT claim provisioning has not produced a runtime X.509 identity.
+- Allowed startup to perform the initial manager-assisted claim bootstrap before IoT settings exist locally.
+- Prevented duplicate AWS IoT MQTT connect attempts while a connection is already active, connecting, or interrupted.
+- Extended `uninstall.sh --purge` to explicitly remove local AWS IoT certificates and private keys.
+- Bumped the published agent version to `2026.06.000.032`.
+
+- Preconfigured the production manager URL so the one-line installer asks only for the enrollment key.
+- Fixed fresh AWS IoT enrollments to receive claim bootstrap settings after manager validation instead of silently remaining on HTTP polling.
+- Bumped the published agent version to `2026.06.000.031`.
 ## 2026-06-03
 
 - Added manager-driven editable DynSec policy support so broker apply jobs now honor stored default ACL access plus per-client manual role and ACL overrides from Advanced Settings.

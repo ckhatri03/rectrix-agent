@@ -929,9 +929,9 @@ const buildCertificateInspection = (
   };
 };
 
-const runRootShell = async (command: string): Promise<RootShellResult> => {
+const runRootShell = async (command: string, timeoutMs?: number): Promise<RootShellResult> => {
   try {
-    const result = await runRootBinary('/bin/sh', ['-lc', command]);
+    const result = await runRootBinary('/bin/sh', ['-lc', command], { timeoutMs });
     return {
       stdout: result.stdout,
       stderr: result.stderr,
@@ -1228,9 +1228,10 @@ const deployLetsEncryptDns01GoDaddy = async (
     args: string[],
     allowFailure = false,
     commandPreview = [binary, ...args.map((value) => shellEscape(value))].join(' '),
+    options?: { timeoutMs?: number; description?: string; env?: NodeJS.ProcessEnv },
   ) => {
     try {
-      const result = await runRootBinary(binary, args);
+      const result = await runRootBinary(binary, args, options);
       steps.push({
         step: stepName,
         command: commandPreview,
@@ -1284,7 +1285,14 @@ const deployLetsEncryptDns01GoDaddy = async (
     });
   }
 
-  await runBinaryStep('Issue certificate with certbot', config.certbotBin, certbotArgs, false, certbotCommand);
+  await runBinaryStep(
+    'Issue certificate with certbot',
+    config.certbotBin,
+    certbotArgs,
+    false,
+    certbotCommand,
+    { timeoutMs: 600000 },
+  );
   certificateInspection = await inspectLetsEncryptCertificateLocal(certHostname);
 
   if (payload.renewDryRun) {
@@ -1487,8 +1495,9 @@ const deployLetsEncryptDns01 = async (
     stepName: string,
     command: string,
     allowFailure = false,
+    timeoutMs?: number,
   ) => {
-    const result = await runRootShell(command);
+    const result = await runRootShell(command, timeoutMs);
     steps.push({
       step: stepName,
       command,
@@ -1535,7 +1544,7 @@ const deployLetsEncryptDns01 = async (
     ].join(' '),
   );
 
-  await runStep('Issue certificate with certbot', certbotCommand);
+  await runStep('Issue certificate with certbot', certbotCommand, false, 600000);
   certificateInspection = await inspectLetsEncryptCertificateLocal(certHostname);
 
   if (payload.renewDryRun) {

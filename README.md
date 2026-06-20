@@ -52,7 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/ckhatri03/rectrix-agent/main/script
 The installer:
 
 - creates the `rectrix-agent` service user
-- auto-installs or upgrades Node.js 20 on Ubuntu/Debian when it is missing or too old
+- auto-installs or upgrades Node.js 22 on Ubuntu/Debian when it is missing or too old
 - installs the app under `/opt/rectrix-agent/app`
 - installs `/etc/systemd/system/rectrix-agent.service`
 - creates `/etc/rectrix-agent/agent.env` if missing

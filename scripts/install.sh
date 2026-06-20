@@ -84,11 +84,11 @@ detect_os() {
   printf '|\n'
 }
 
-install_nodejs_20_debian() {
+install_nodejs_22_debian() {
   local os_info
   local os_id
   local os_like
-  local node_major="${NODE_MAJOR_VERSION:-20}"
+  local node_major="${NODE_MAJOR_VERSION:-22}"
   local keyring_dir="/etc/apt/keyrings"
   local keyring_file="${keyring_dir}/nodesource.gpg"
   local source_list="/etc/apt/sources.list.d/nodesource.list"
@@ -127,7 +127,7 @@ EOF
 }
 
 ensure_node_runtime() {
-  local required_major="${NODE_MAJOR_VERSION:-20}"
+  local required_major="${NODE_MAJOR_VERSION:-22}"
   local required_version="${required_major}.0.0"
   local current_version=""
 
@@ -145,7 +145,7 @@ ensure_node_runtime() {
     echo "Node.js >= ${required_major} is required; installing it now." >&2
   fi
 
-  install_nodejs_20_debian
+  install_nodejs_22_debian
 
   require_cmd node
   require_cmd npm

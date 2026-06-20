@@ -1,16 +1,16 @@
 {
   "name": "rectrix-agent",
-  "version": "2026.06.000.033",
+  "version": "2026.06.000.034",
   "description": "Rectrix edge deployment agent for Mosquitto and Telegraf hosts",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "test": "npm run build && node --test test"
+    "test": "npm run build && node --test test/*.test.js"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "dependencies": {
     "aws-iot-device-sdk-v2": "^1.21.0",
@@ -20,7 +20,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
+    "@types/node": "^22.0.0",
     "@types/ws": "^8.18.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"

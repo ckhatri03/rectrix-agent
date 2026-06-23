@@ -66,6 +66,7 @@ const CONTROL_PLANE_MODES = ['auto', 'http', 'rest', 'wss', 'aws-iot-mqtt'] as c
 const CONTROL_PLANE_AUTH_MODES = ['auto', 'token', 'x509'] as const satisfies ReadonlyArray<ControlPlaneAuthMode>;
 const AWS_IOT_TRANSPORT_MODES = ['mqtt-x509-claim', 'mqtt-x509-runtime'] as const satisfies ReadonlyArray<AwsIotTransportMode>;
 const DEFAULT_ALLOWED_CONFIG_ROOTS = [
+  '/var/lib/rectrix-agent/certs',
   '/etc/mosquitto',
   '/etc/telegraf',
   '/etc/systemd/system',
@@ -82,6 +83,9 @@ const DEFAULT_ALLOWED_UNIT_PATTERNS = [
 export const CAPABILITIES: CapabilityKey[] = [
   'agent.diagnostics.snapshot',
   'agent.update',
+  'aws-iot.certificate.prepare',
+  'aws-iot.certificate.install',
+  'aws-iot.certificate.cleanup',
   'stack.install',
   'stack.remove',
   'mqtt.diagnostics.snapshot',

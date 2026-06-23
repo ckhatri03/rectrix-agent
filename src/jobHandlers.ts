@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { X509Certificate } from 'node:crypto';
+import { createPublicKey, generateKeyPairSync, X509Certificate } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -49,6 +49,78 @@ const agentUpdateSchema = z.object({
   version: z.string().trim().min(1),
   serviceName: z.string().trim().min(1).default('rectrix-agent.service'),
 });
+
+const awsIotCertificatePrepareSchema = z.object({
+  agentId: z.string().trim().min(1).max(128),
+});
+const awsIotCertificateInstallSchema = z.object({
+  certificateArn: z.string().trim().startsWith('arn:aws:iot:'),
+  certificatePem: z.string().includes('-----BEGIN CERTIFICATE-----'),
+});
+const requireAwsIotCertificatePaths = () => {
+  if (!config.iotCertPath || !config.iotKeyPath) throw new Error('AWS IoT certificate and private-key paths are not configured');
+  return { certificatePath: config.iotCertPath, privateKeyPath: config.iotKeyPath, pendingKeyPath: `${config.iotKeyPath}.rotation-pending` };
+};
+const prepareAwsIotCertificateRotation = async (payload: z.infer<typeof awsIotCertificatePrepareSchema>): Promise<JobResult> => {
+  const paths = requireAwsIotCertificatePaths();
+  const { privateKey } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+  const tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'rectrix-iot-csr-'));
+  const tempKeyPath = path.join(tempDirectory, 'private-key.pem');
+  const tempCsrPath = path.join(tempDirectory, 'request.csr');
+  try {
+    await fs.writeFile(tempKeyPath, privateKey, { mode: 0o600 });
+    await execFileAsync('openssl', ['req', '-new', '-sha256', '-key', tempKeyPath, '-out', tempCsrPath, '-subj', `/CN=${payload.agentId.replace(/[^a-zA-Z0-9_.-]/g, '_')}`]);
+    const csrPem = await fs.readFile(tempCsrPath, 'utf8');
+    await writeManagedFiles([{ path: paths.pendingKeyPath, content: privateKey, mode: '0600' }]);
+    await chownManagedPath(paths.pendingKeyPath, 'rectrix-agent', 'rectrix-agent');
+    return { ok: true, summary: 'Generated AWS IoT certificate signing request', details: { csrPem } };
+  } finally {
+    await fs.rm(tempDirectory, { recursive: true, force: true });
+  }
+};
+const installAwsIotCertificateRotation = async (payload: z.infer<typeof awsIotCertificateInstallSchema>): Promise<JobResult> => {
+  const paths = requireAwsIotCertificatePaths();
+  const pendingPrivateKey = await fs.readFile(paths.pendingKeyPath, 'utf8');
+  const certificate = new X509Certificate(payload.certificatePem);
+  const certificatePublicKey = certificate.publicKey.export({ type: 'spki', format: 'der' });
+  const privatePublicKey = createPublicKey(pendingPrivateKey).export({ type: 'spki', format: 'der' });
+  if (!certificatePublicKey.equals(privatePublicKey)) throw new Error('Replacement AWS IoT certificate does not match the pending private key');
+  const currentCertificate = await fs.readFile(paths.certificatePath, 'utf8');
+  const currentPrivateKey = await fs.readFile(paths.privateKeyPath, 'utf8');
+  const backupCertificatePath = `${paths.certificatePath}.rotation-backup`;
+  const backupPrivateKeyPath = `${paths.privateKeyPath}.rotation-backup`;
+  try {
+    await writeManagedFiles([
+      { path: backupCertificatePath, content: currentCertificate, mode: '0644' },
+      { path: backupPrivateKeyPath, content: currentPrivateKey, mode: '0600' },
+      { path: paths.certificatePath, content: payload.certificatePem, mode: '0644' },
+      { path: paths.privateKeyPath, content: pendingPrivateKey, mode: '0600' },
+    ]);
+    for (const target of [backupCertificatePath, backupPrivateKeyPath, paths.certificatePath, paths.privateKeyPath]) await chownManagedPath(target, 'rectrix-agent', 'rectrix-agent');
+  } catch (error) {
+    await writeManagedFiles([{ path: paths.certificatePath, content: currentCertificate, mode: '0644' }, { path: paths.privateKeyPath, content: currentPrivateKey, mode: '0600' }]).catch(() => undefined);
+    throw error;
+  }
+  return { ok: true, summary: 'Installed replacement AWS IoT certificate; restarting agent', details: { certificateArn: payload.certificateArn, certificateValidTo: certificate.validTo, backupCertificatePath, backupPrivateKeyPath }, restartRequested: true };
+};
+
+const cleanupAwsIotCertificateRotation = async (): Promise<JobResult> => {
+  const paths = requireAwsIotCertificatePaths();
+  const removedFiles = await removeManagedFiles([
+    paths.pendingKeyPath,
+    `${paths.certificatePath}.rotation-backup`,
+    `${paths.privateKeyPath}.rotation-backup`,
+  ]);
+  return {
+    ok: true,
+    summary: 'Removed retired AWS IoT rotation credentials',
+    details: { removedFiles },
+  };
+};
 
 const fileApplySchema = z.object({
   files: z.array(fileSchema).min(1),
@@ -2439,6 +2511,12 @@ export const runJob = async (job: AgentJob): Promise<JobResult> => {
     }
     case 'agent.update':
       return queueAgentSelfUpdate(agentUpdateSchema.parse(job.payload));
+    case 'aws-iot.certificate.prepare':
+      return prepareAwsIotCertificateRotation(awsIotCertificatePrepareSchema.parse(job.payload));
+    case 'aws-iot.certificate.install':
+      return installAwsIotCertificateRotation(awsIotCertificateInstallSchema.parse(job.payload));
+    case 'aws-iot.certificate.cleanup':
+      return cleanupAwsIotCertificateRotation();
     case 'stack.install': {
       const payload = stackSchema.parse(job.payload);
       const packages = await aptInstall(

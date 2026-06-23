@@ -1,6 +1,9 @@
 export type CapabilityKey =
   | 'agent.diagnostics.snapshot'
   | 'agent.update'
+  | 'aws-iot.certificate.prepare'
+  | 'aws-iot.certificate.install'
+  | 'aws-iot.certificate.cleanup'
   | 'stack.install'
   | 'stack.remove'
   | 'mqtt.diagnostics.snapshot'
@@ -80,4 +83,5 @@ export interface JobResult {
   ok: true;
   summary: string;
   details?: Record<string, unknown>;
+  restartRequested?: boolean;
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-21
+- Added manager-driven AWS IoT X.509 certificate rotation with agent-local private key and CSR generation.
+- Added atomic replacement certificate installation with rollback copies and a controlled agent restart.
+- Bumped the published agent version to `2026.06.000.035`.
+
 
 ## 2026-06-20
 - Added deterministic local claim/runtime certificate paths to the manager-assisted AWS IoT bootstrap.

@@ -420,6 +420,11 @@ export class AgentService {
             details: result.details,
           });
           logger.info({ jobId: job.id, jobType: job.type }, 'job completed');
+          if (result.restartRequested) {
+            logger.info({ jobId: job.id }, 'job requested agent restart');
+            setTimeout(() => process.exit(0), 250);
+            return;
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           await transport.sendJobEvent(job.id, 'error', message, {
